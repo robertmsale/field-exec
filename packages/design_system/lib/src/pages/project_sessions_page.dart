@@ -165,11 +165,6 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
   }
 
   Future<void> _showConversationPicker(List<Conversation> items) async {
-    final tabs = controller.tabs;
-    if (tabs.isEmpty) return;
-    final active = tabs[controller.activeIndex.value.clamp(0, tabs.length - 1)];
-    final session = controller.sessionForTab(active);
-
     final picked = await showModalBottomSheet<Conversation>(
       context: context,
       showDragHandle: true,
@@ -201,6 +196,6 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
     );
 
     if (picked == null) return;
-    await session.resumeThreadById(picked.threadId, preview: picked.preview);
+    await controller.openConversation(picked);
   }
 }

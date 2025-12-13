@@ -388,6 +388,18 @@ class MockProjectSessionsController extends ProjectSessionsControllerBase {
   }
 
   @override
+  Future<void> openConversation(Conversation conversation) async {
+    final tabs = this.tabs;
+    if (tabs.isEmpty) return;
+    final active = tabs[activeIndex.value.clamp(0, tabs.length - 1)];
+    final session = sessionForTab(active);
+    await session.resumeThreadById(
+      conversation.threadId,
+      preview: conversation.preview,
+    );
+  }
+
+  @override
   String runCommandHint() => 'Runs in ${args.project.path} (mock)';
 
   @override
@@ -664,6 +676,9 @@ class MockSessionController extends SessionControllerBase {
       animated: true,
     );
   }
+
+  @override
+  Future<void> reattachIfNeeded({int backfillLines = 200}) async {}
 
   @override
   void stop() {

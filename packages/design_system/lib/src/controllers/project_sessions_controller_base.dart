@@ -30,6 +30,7 @@ abstract class ProjectSessionsControllerBase extends GetxController {
   Future<void> closeTab(ProjectTab tab);
 
   Future<List<Conversation>> loadConversations();
+  Future<void> openConversation(Conversation conversation);
 
   String runCommandHint();
   Future<RunCommandResult> runShellCommand(String command);

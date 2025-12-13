@@ -62,6 +62,10 @@ class SessionController extends SessionControllerBase {
   Future<void> _tailQueue = Future.value();
   Future<void> _activeQueue = Future.value();
   Object? _tailToken;
+  LocalCommandProcess? _localTailProc;
+  StreamSubscription<String>? _localTailStdoutSub;
+  StreamSubscription<String>? _localTailStderrSub;
+  Object? _localTailToken;
   Worker? _lifecycleWorker;
   Worker? _activeWorker;
   final _recentLogLines = <String>[];
@@ -94,8 +98,11 @@ class SessionController extends SessionControllerBase {
   void onInit() {
     super.onInit();
     _loadThreadId();
+    _loadRemoteJobId();
     if (!target.local) {
       _maybeReattachRemote();
+    } else {
+      _maybeReattachLocal();
     }
     _lifecycleWorker = ever<AppLifecycleState?>(_lifecycle.stateRx, (state) {
       if (state == AppLifecycleState.resumed) {
@@ -127,6 +134,7 @@ class SessionController extends SessionControllerBase {
     _lifecycleWorker?.dispose();
     _activeWorker?.dispose();
     _cancelTailOnly();
+    _cancelLocalTailOnly();
     chatController.dispose();
     inputController.dispose();
     super.onClose();
@@ -175,8 +183,34 @@ class SessionController extends SessionControllerBase {
   }
 
   @override
+  Future<void> reattachIfNeeded({int backfillLines = 200}) async {
+    if (target.local) {
+      await _refreshLocalRunningStateAndTail(backfillLines: backfillLines);
+    } else {
+      await _refreshRemoteRunningStateAndTail(backfillLines: backfillLines);
+    }
+  }
+
+  @override
   void stop() {
     _cancelCurrent?.call();
+
+    if (target.local) {
+      final job = remoteJobId.value;
+      if (job == null || job.isEmpty) return;
+      _stopLocalJob(job).whenComplete(() async {
+        await _sessionStore.clearRemoteJobId(
+          targetKey: target.targetKey,
+          projectPath: projectPath,
+          tabId: tabId,
+        );
+        remoteJobId.value = null;
+        _remoteJobId = null;
+        isRunning.value = false;
+        thinkingPreview.value = null;
+        _cancelLocalTailOnly();
+      });
+    }
   }
 
   @override
@@ -210,6 +244,47 @@ class SessionController extends SessionControllerBase {
       tabId: tabId,
     );
     threadId.value = stored;
+  }
+
+  Future<void> _loadRemoteJobId() async {
+    final stored = await _sessionStore.loadRemoteJobId(
+      targetKey: target.targetKey,
+      projectPath: projectPath,
+      tabId: tabId,
+    );
+    _remoteJobId = stored;
+    remoteJobId.value = stored;
+  }
+
+  Future<void> _maybeReattachLocal() async {
+    // Only relevant for "attaching" to a remote-style job (tmux/pid) that is
+    // writing JSONL to this tab's log file (e.g., started from iOS over SSH).
+    if (!target.local) return;
+    try {
+      if (remoteJobId.value == null || remoteJobId.value!.isEmpty) {
+        final jobId = await _readLocalJobId();
+        if (jobId != null && jobId.isNotEmpty) {
+          _remoteJobId = jobId;
+          remoteJobId.value = jobId;
+          await _sessionStore.saveRemoteJobId(
+            targetKey: target.targetKey,
+            projectPath: projectPath,
+            tabId: tabId,
+            remoteJobId: jobId,
+          );
+        }
+      }
+
+      if (remoteJobId.value == null || remoteJobId.value!.isEmpty) return;
+
+      await _rehydrateFromLocalLog(
+        maxLines: 200,
+        logRelPath: _logRelPath,
+      );
+      await reattachIfNeeded(backfillLines: 0);
+    } catch (_) {
+      // Best-effort.
+    }
   }
 
   Future<void> _saveThreadId(String id) async {
@@ -359,6 +434,75 @@ class SessionController extends SessionControllerBase {
     _tailStderrSub = null;
   }
 
+  void _cancelLocalTailOnly() {
+    _localTailToken = null;
+    try {
+      _localTailStdoutSub?.cancel();
+    } catch (_) {}
+    try {
+      _localTailStderrSub?.cancel();
+    } catch (_) {}
+    try {
+      _localTailProc?.cancel();
+    } catch (_) {}
+    _localTailProc = null;
+    _localTailStdoutSub = null;
+    _localTailStderrSub = null;
+  }
+
+  Future<String?> _readLocalJobId() async {
+    try {
+      final file = File(_joinPosix(projectPath, _jobRelPath));
+      if (!await file.exists()) return null;
+      final text = (await file.readAsString()).trim();
+      return text.isEmpty ? null : text;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _startLocalLogTailIfNeeded({int startAtLines = 0}) async {
+    if (_localTailProc != null) return;
+    final logPath = _joinPosix(projectPath, _logRelPath);
+    final file = File(logPath);
+    if (!await file.exists()) {
+      await file.parent.create(recursive: true);
+      await file.create(recursive: true);
+    }
+
+    final proc = _localShell.startCommand(
+      executable: 'tail',
+      arguments: ['-n', '$startAtLines', '-F', logPath],
+      workingDirectory: projectPath,
+    );
+    final token = Object();
+    _localTailToken = token;
+    _localTailProc = proc;
+
+    _localTailStdoutSub = proc.stdoutLines.listen((line) {
+      if (line.trim().isEmpty) return;
+      if (!_shouldProcessLogLine(line)) return;
+      _tailQueue = _tailQueue.then((_) async {
+        try {
+          final decoded = jsonDecode(line);
+          if (decoded is Map) {
+            await _handleCodexJsonEvent(decoded.cast<String, Object?>());
+          }
+        } catch (_) {}
+      });
+    });
+
+    _localTailStderrSub = proc.stderrLines.listen((line) {
+      if (line.trim().isEmpty) return;
+      _insertEvent(type: 'tail_stderr', text: line);
+    });
+
+    proc.done.then((_) {
+      if (_localTailToken != token) return;
+      _cancelLocalTailOnly();
+    });
+  }
+
   void _rememberRecentLogLine(String line) {
     // Keep a small LRU-ish window of raw JSONL lines to suppress duplicates
     // when reattaching the tail after sleep/background.
@@ -382,10 +526,10 @@ class SessionController extends SessionControllerBase {
     // Avoid holding a long-lived SSH connection open while backgrounded.
     // The remote job continues in tmux/nohup; we can reattach on resume.
     if (!target.local) _cancelTailOnly();
+    if (target.local) _cancelLocalTailOnly();
   }
 
   Future<void> _onAppResumed() async {
-    if (target.local) return;
     final active = _activeSession.active;
     final isActiveView = active != null &&
         active.targetKey == target.targetKey &&
@@ -393,9 +537,14 @@ class SessionController extends SessionControllerBase {
         active.tabId == tabId;
     if (!isActiveView) return;
 
-    // If we believe the remote job is running but tail died (common after sleep),
+    // If we believe the job is running but tail died (common after sleep),
     // re-check liveness and reattach tail with a small backfill.
     if (!isRunning.value) return;
+    if (target.local) {
+      if (_localTailProc != null) return;
+      await _refreshLocalRunningStateAndTail(backfillLines: 200);
+      return;
+    }
     if (_tailProc != null) return;
     await _refreshRemoteRunningStateAndTail(backfillLines: 200);
   }
@@ -965,6 +1114,121 @@ class SessionController extends SessionControllerBase {
     thinkingPreview.value = null;
     _cancelCurrent = null;
     _cancelTailOnly();
+  }
+
+  Future<void> _refreshLocalRunningStateAndTail({required int backfillLines}) async {
+    if (!target.local) return;
+    final stored = remoteJobId.value ??
+        (await _sessionStore.loadRemoteJobId(
+          targetKey: target.targetKey,
+          projectPath: projectPath,
+          tabId: tabId,
+        ));
+    final job = (stored == null || stored.isEmpty) ? await _readLocalJobId() : stored;
+
+    if (job == null || job.isEmpty) {
+      isRunning.value = false;
+      thinkingPreview.value = null;
+      _cancelCurrent = null;
+      _cancelLocalTailOnly();
+      remoteJobId.value = null;
+      _remoteJobId = null;
+      return;
+    }
+
+    _remoteJobId = job;
+    remoteJobId.value = job;
+    await _sessionStore.saveRemoteJobId(
+      targetKey: target.targetKey,
+      projectPath: projectPath,
+      tabId: tabId,
+      remoteJobId: job,
+    );
+
+    final alive = await _isLocalJobAlive(job);
+    if (alive) {
+      isRunning.value = true;
+      _cancelCurrent ??= () {
+        _stopLocalJob(job).whenComplete(() async {
+          _cancelLocalTailOnly();
+          _cancelCurrent = null;
+          isRunning.value = false;
+          thinkingPreview.value = null;
+          await _sessionStore.clearRemoteJobId(
+            targetKey: target.targetKey,
+            projectPath: projectPath,
+            tabId: tabId,
+          );
+          remoteJobId.value = null;
+          _remoteJobId = null;
+        });
+      };
+      await _startLocalLogTailIfNeeded(startAtLines: backfillLines);
+      return;
+    }
+
+    await _sessionStore.clearRemoteJobId(
+      targetKey: target.targetKey,
+      projectPath: projectPath,
+      tabId: tabId,
+    );
+    remoteJobId.value = null;
+    _remoteJobId = null;
+    isRunning.value = false;
+    thinkingPreview.value = null;
+    _cancelCurrent = null;
+    _cancelLocalTailOnly();
+  }
+
+  Future<bool> _isLocalJobAlive(String job) async {
+    if (job.startsWith('tmux:')) {
+      final name = job.substring('tmux:'.length);
+      final checkCmd = [
+        'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
+        'TMUX_BIN="\$(command -v tmux 2>/dev/null || true)"',
+        'if [ -z "\$TMUX_BIN" ]; then',
+        '  for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do',
+        '    if [ -x "\$p" ]; then TMUX_BIN="\$p"; break; fi',
+        '  done',
+        'fi',
+        '[ -n "\$TMUX_BIN" ] || exit 127',
+        '"\$TMUX_BIN" has-session -t ${_shQuote(name)}',
+      ].join('\n');
+      final res = await Process.run('/bin/sh', ['-c', checkCmd]);
+      return res.exitCode == 0 || res.exitCode == 127;
+    }
+
+    if (job.startsWith('pid:')) {
+      final pid = job.substring('pid:'.length);
+      final res = await Process.run('/bin/sh', ['-c', 'kill -0 $pid >/dev/null 2>&1']);
+      return res.exitCode == 0;
+    }
+
+    return false;
+  }
+
+  Future<void> _stopLocalJob(String job) async {
+    String cmd;
+    if (job.startsWith('tmux:')) {
+      final name = job.substring('tmux:'.length);
+      cmd = [
+        'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
+        'TMUX_BIN="\$(command -v tmux 2>/dev/null || true)"',
+        'if [ -z "\$TMUX_BIN" ]; then',
+        '  for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do',
+        '    if [ -x "\$p" ]; then TMUX_BIN="\$p"; break; fi',
+        '  done',
+        'fi',
+        '[ -n "\$TMUX_BIN" ] || exit 127',
+        '"\$TMUX_BIN" kill-session -t ${_shQuote(name)} >/dev/null 2>&1 || true',
+      ].join('\n');
+    } else if (job.startsWith('pid:')) {
+      final pid = job.substring('pid:'.length);
+      cmd = 'kill $pid >/dev/null 2>&1 || true';
+    } else {
+      cmd = 'true';
+    }
+    await Process.run('/bin/sh', ['-c', cmd]);
   }
 
   Future<void> _stopRemoteJobBestEffort() async {
