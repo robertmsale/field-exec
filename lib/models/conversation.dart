@@ -1,12 +1,14 @@
 class Conversation {
   final String threadId;
   final String preview;
+  final String tabId;
   final int createdAtMs;
   final int lastUsedAtMs;
 
   const Conversation({
     required this.threadId,
     required this.preview,
+    required this.tabId,
     required this.createdAtMs,
     required this.lastUsedAtMs,
   });
@@ -14,6 +16,7 @@ class Conversation {
   Conversation touch(int nowMs) => Conversation(
         threadId: threadId,
         preview: preview,
+        tabId: tabId,
         createdAtMs: createdAtMs,
         lastUsedAtMs: nowMs,
       );
@@ -21,6 +24,7 @@ class Conversation {
   Map<String, Object?> toJson() => {
         'threadId': threadId,
         'preview': preview,
+        'tabId': tabId,
         'createdAtMs': createdAtMs,
         'lastUsedAtMs': lastUsedAtMs,
       };
@@ -29,9 +33,9 @@ class Conversation {
     return Conversation(
       threadId: (json['threadId'] as String?) ?? '',
       preview: (json['preview'] as String?) ?? '',
+      tabId: (json['tabId'] as String?) ?? '',
       createdAtMs: (json['createdAtMs'] as num?)?.toInt() ?? 0,
       lastUsedAtMs: (json['lastUsedAtMs'] as num?)?.toInt() ?? 0,
     );
   }
 }
-

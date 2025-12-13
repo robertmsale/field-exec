@@ -137,6 +137,10 @@ class SessionController extends GetxController {
       type: 'resume',
       text: 'Resuming thread ${id.substring(0, 8)}… ${preview ?? ''}',
     );
+
+    try {
+      await _rehydrateFromAnyLogForThread(threadId: id, maxLines: 300);
+    } catch (_) {}
   }
 
   void stop() {
@@ -904,21 +908,46 @@ class SessionController extends GetxController {
         await _storage.read(key: SecureStorageService.sshPrivateKeyPemKey);
 
     try {
+      Future<SshCommandResult> run(String cmd) async {
+        try {
+          return await _ssh.runCommandWithResult(
+            host: profile.host,
+            port: profile.port,
+            username: profile.username,
+            privateKeyPem: pem,
+            password: _sshPassword,
+            command: cmd,
+          );
+        } catch (_) {
+          if (_sshPassword == null) {
+            final pw = await _promptForPassword();
+            if (pw == null || pw.isEmpty) rethrow;
+            _sshPassword = pw;
+            return _ssh.runCommandWithResult(
+              host: profile.host,
+              port: profile.port,
+              username: profile.username,
+              privateKeyPem: pem,
+              password: _sshPassword,
+              command: cmd,
+            );
+          }
+          rethrow;
+        }
+      }
+
       final logAbs = _remoteAbsPath(_logRelPath);
       final cmd =
           'sh -lc ${_shQuote('if [ -f ${_shQuote(logAbs)} ]; then tail -n $maxLines ${_shQuote(logAbs)}; fi')}';
 
-      final res = await _ssh.runCommandWithResult(
-        host: profile.host,
-        port: profile.port,
-        username: profile.username,
-        privateKeyPem: pem,
-        password: _sshPassword,
-        command: cmd,
-      );
+      final res = await run(cmd);
 
       final lines = const LineSplitter().convert(res.stdout);
       if (lines.isEmpty) return;
+
+      for (final line in lines) {
+        if (line.trim().isNotEmpty) _rememberRecentLogLine(line);
+      }
 
       _pendingActionsMessage = null;
       final backfill = <Message>[
@@ -969,6 +998,248 @@ class SessionController extends GetxController {
     }
   }
 
+  Future<void> _rehydrateFromAnyLogForThread({
+    required String threadId,
+    required int maxLines,
+  }) async {
+    if (threadId.trim().isEmpty) return;
+    if (target.local) {
+      final rel = await _findLocalLogRelPathForThread(threadId: threadId);
+      if (rel == null) return;
+      await _rehydrateFromLocalLog(
+        maxLines: maxLines,
+        logRelPath: rel,
+        focusThreadId: threadId,
+      );
+      return;
+    }
+
+    final rel = await _findRemoteLogRelPathForThread(threadId: threadId);
+    if (rel == null) return;
+    await _rehydrateFromRemoteLogPath(
+      maxLines: maxLines,
+      logRelPath: rel,
+      focusThreadId: threadId,
+    );
+  }
+
+  Future<void> _rehydrateFromRemoteLogPath({
+    required int maxLines,
+    required String logRelPath,
+    String? focusThreadId,
+  }) async {
+    if (target.local) return;
+
+    final profile = target.profile!;
+    final pem =
+        await _storage.read(key: SecureStorageService.sshPrivateKeyPemKey);
+
+    Future<SshCommandResult> run(String cmd) async {
+      try {
+        return await _ssh.runCommandWithResult(
+          host: profile.host,
+          port: profile.port,
+          username: profile.username,
+          privateKeyPem: pem,
+          password: _sshPassword,
+          command: cmd,
+        );
+      } catch (_) {
+        if (_sshPassword == null) {
+          final pw = await _promptForPassword();
+          if (pw == null || pw.isEmpty) rethrow;
+          _sshPassword = pw;
+          return _ssh.runCommandWithResult(
+            host: profile.host,
+            port: profile.port,
+            username: profile.username,
+            privateKeyPem: pem,
+            password: _sshPassword,
+            command: cmd,
+          );
+        }
+        rethrow;
+      }
+    }
+
+    final logAbs = _remoteAbsPath(logRelPath);
+    final cmd =
+        'sh -lc ${_shQuote('if [ -f ${_shQuote(logAbs)} ]; then tail -n $maxLines ${_shQuote(logAbs)}; fi')}';
+
+    final res = await run(cmd);
+    final lines = const LineSplitter().convert(res.stdout);
+    if (lines.isEmpty) return;
+
+    for (final line in lines) {
+      if (line.trim().isNotEmpty) _rememberRecentLogLine(line);
+    }
+
+    final start = _findFocusStartIndex(lines, focusThreadId);
+    _pendingActionsMessage = null;
+    final backfill = <Message>[
+      _welcomeMessage(),
+      _eventMessage(
+        type: 'replay',
+        text: 'Replayed ${lines.length} lines from $logRelPath.',
+      ),
+    ];
+
+    for (final line in lines.skip(start)) {
+      if (line.trim().isEmpty) continue;
+      try {
+        final decoded = jsonDecode(line);
+        if (decoded is Map) {
+          final out = await _materializeCodexJsonEvent(
+            decoded.cast<String, Object?>(),
+            replay: true,
+          );
+          backfill.addAll(out);
+        }
+      } catch (_) {}
+    }
+
+    await chatController.setMessages(backfill, animated: false);
+  }
+
+  Future<void> _rehydrateFromLocalLog({
+    required int maxLines,
+    required String logRelPath,
+    String? focusThreadId,
+  }) async {
+    final logPath = _joinPosix(projectPath, logRelPath);
+    final file = File(logPath);
+    if (!await file.exists()) return;
+
+    final contents = await file.readAsString();
+    final lines = const LineSplitter().convert(contents);
+    if (lines.isEmpty) return;
+
+    final tail =
+        lines.length <= maxLines ? lines : lines.sublist(lines.length - maxLines);
+    for (final line in tail) {
+      if (line.trim().isNotEmpty) _rememberRecentLogLine(line);
+    }
+
+    final start = _findFocusStartIndex(tail, focusThreadId);
+    _pendingActionsMessage = null;
+    final backfill = <Message>[
+      _welcomeMessage(),
+      _eventMessage(
+        type: 'replay',
+        text: 'Replayed ${tail.length} local log lines from $logRelPath.',
+      ),
+    ];
+
+    for (final line in tail.skip(start)) {
+      if (line.trim().isEmpty) continue;
+      try {
+        final decoded = jsonDecode(line);
+        if (decoded is Map) {
+          final out = await _materializeCodexJsonEvent(
+            decoded.cast<String, Object?>(),
+            replay: true,
+          );
+          backfill.addAll(out);
+        }
+      } catch (_) {}
+    }
+
+    await chatController.setMessages(backfill, animated: false);
+  }
+
+  static int _findFocusStartIndex(List<String> lines, String? focusThreadId) {
+    if (focusThreadId == null || focusThreadId.trim().isEmpty) return 0;
+    for (var i = lines.length - 1; i >= 0; i--) {
+      final line = lines[i];
+      if (!line.contains('thread.started')) continue;
+      if (!line.contains(focusThreadId)) continue;
+      try {
+        final decoded = jsonDecode(line);
+        if (decoded is Map) {
+          final type = decoded['type']?.toString();
+          final id = decoded['thread_id']?.toString();
+          if (type == 'thread.started' && id == focusThreadId) return i;
+        }
+      } catch (_) {}
+    }
+    return 0;
+  }
+
+  Future<String?> _findLocalLogRelPathForThread({required String threadId}) async {
+    final dir = Directory(_joinPosix(projectPath, _sessionsDirRelPath));
+    if (!await dir.exists()) return null;
+
+    final entries = await dir.list().toList();
+    final files = entries.whereType<File>().where((f) {
+      final name = f.path.split('/').last;
+      return name.endsWith('.log') && !name.endsWith('.stderr.log');
+    }).toList();
+
+    files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+    for (final f in files) {
+      try {
+        final text = await f.readAsString();
+        if (text.contains('"thread_id":"$threadId"')) {
+          return '$_sessionsDirRelPath/${f.path.split('/').last}';
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  Future<String?> _findRemoteLogRelPathForThread({required String threadId}) async {
+    if (target.local) return null;
+    final profile = target.profile!;
+    final pem =
+        await _storage.read(key: SecureStorageService.sshPrivateKeyPemKey);
+    if (pem == null || pem.trim().isEmpty) return null;
+
+    final pattern = _shQuote('"thread_id":"$threadId"');
+    final findCmd = [
+      'cd ${_shQuote(projectPath)} || exit 0',
+      'if [ ! -d ${_shQuote(_codexRemoteDir)} ]; then exit 0; fi',
+      'for f in \$(ls -t ${_shQuote(_sessionsDirRelPath)}/*.log 2>/dev/null); do',
+      '  case "\$f" in',
+      '    *.stderr.log) continue ;;',
+      '  esac',
+      '  if grep -q $pattern "\$f" 2>/dev/null; then',
+      '    echo "\$f"',
+      '    exit 0',
+      '  fi',
+      'done',
+      'exit 0',
+    ].join('\n');
+
+    Future<SshCommandResult> runOnce({String? password}) {
+      return _ssh.runCommandWithResult(
+        host: profile.host,
+        port: profile.port,
+        username: profile.username,
+        privateKeyPem: pem,
+        password: password,
+        command: 'sh -lc ${_shQuote(findCmd)}',
+      );
+    }
+
+    SshCommandResult res;
+    try {
+      res = await runOnce(password: _sshPassword);
+    } catch (_) {
+      if (_sshPassword == null) {
+        final pw = await _promptForPassword();
+        if (pw == null || pw.isEmpty) return null;
+        _sshPassword = pw;
+        res = await runOnce(password: _sshPassword);
+      } else {
+        return null;
+      }
+    }
+
+    final path = res.stdout.trim();
+    if (path.isEmpty) return null;
+    return path;
+  }
+
   Future<void> _handleCodexJsonEvent(Map<String, Object?> event) async {
     final type = event['type'] as String?;
     if (type == null || type.isEmpty) return;
@@ -982,6 +1253,7 @@ class SessionController extends GetxController {
           projectPath: projectPath,
           threadId: id,
           preview: _lastUserPromptPreview,
+          tabId: tabId,
         );
         if (!target.local) {
           try {
@@ -1164,6 +1436,7 @@ class SessionController extends GetxController {
             projectPath: projectPath,
             threadId: id,
             preview: _lastUserPromptPreview,
+            tabId: tabId,
           );
         }
       }

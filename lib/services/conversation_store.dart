@@ -29,6 +29,7 @@ class ConversationStore {
     required String projectPath,
     required String threadId,
     required String preview,
+    required String tabId,
   }) async {
     final now = DateTime.now().millisecondsSinceEpoch;
     final list = await load(targetKey: targetKey, projectPath: projectPath);
@@ -41,12 +42,20 @@ class ConversationStore {
         Conversation(
           threadId: threadId,
           preview: preview,
+          tabId: tabId,
           createdAtMs: now,
           lastUsedAtMs: now,
         ),
       );
     } else {
-      next[idx] = next[idx].touch(now);
+      final existing = next[idx];
+      next[idx] = Conversation(
+        threadId: existing.threadId,
+        preview: existing.preview,
+        tabId: existing.tabId.isNotEmpty ? existing.tabId : tabId,
+        createdAtMs: existing.createdAtMs,
+        lastUsedAtMs: now,
+      );
     }
 
     final capped = next.take(50).toList(growable: false);
@@ -55,4 +64,3 @@ class ConversationStore {
     await prefs.setStringList(_key(targetKey, projectPath), raw);
   }
 }
-
