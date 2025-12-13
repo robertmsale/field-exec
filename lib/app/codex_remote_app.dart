@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:design_system/design_system.dart';
 
 import 'bindings/initial_binding.dart';
 import 'routes/app_pages.dart';
-import 'routes/app_routes.dart';
 
 class CodexRemoteApp extends StatelessWidget {
   const CodexRemoteApp({super.key});
@@ -15,9 +15,8 @@ class CodexRemoteApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue)),
       initialBinding: InitialBinding(),
-      initialRoute: AppRoutes.connect,
+      initialRoute: DesignRoutes.connect,
       getPages: AppPages.pages,
     );
   }
 }
-

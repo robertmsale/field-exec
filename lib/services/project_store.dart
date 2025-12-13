@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../models/project.dart';
+import 'package:design_system/design_system.dart';
 
 class ProjectStore {
   static String _projectsKey(String targetKey) => 'projects_v1:$targetKey';
@@ -43,4 +43,3 @@ class ProjectStore {
     await prefs.setString(_lastProjectKey(targetKey), projectId);
   }
 }
-

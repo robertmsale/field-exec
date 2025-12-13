@@ -1,25 +1,31 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:design_system/design_system.dart';
 import 'package:get/get.dart';
 
-import '../../app/routes/app_routes.dart';
-import '../../models/connection_profile.dart';
 import '../../services/connection_history_service.dart';
 import '../../services/secure_storage_service.dart';
 import '../../services/ssh_service.dart';
-import '../projects/target_args.dart';
 
-class ConnectionController extends GetxController {
+class ConnectionController extends ConnectionControllerBase {
+  @override
   final userAtHostController = TextEditingController();
+  @override
   final portController = TextEditingController(text: '22');
+  @override
   final privateKeyPemController = TextEditingController();
+  @override
   final privateKeyPassphraseController = TextEditingController();
 
+  @override
   final useLocalRunner = (Platform.isMacOS).obs;
 
+  @override
   final isBusy = false.obs;
+  @override
   final status = ''.obs;
+  @override
   final recentProfiles = <ConnectionProfile>[].obs;
 
   SecureStorageService get _storage => Get.find<SecureStorageService>();
@@ -59,8 +65,10 @@ class ConnectionController extends GetxController {
     }
   }
 
+  @override
   Future<void> reloadKeyFromKeychain() => _loadKeyFromKeychain();
 
+  @override
   Future<void> savePrivateKeyToKeychain() async {
     final pem = privateKeyPemController.text.trim();
     if (pem.isEmpty) {
@@ -108,14 +116,16 @@ class ConnectionController extends GetxController {
     return ConnectionProfile(userAtHost: userAtHost, port: port);
   }
 
+  @override
   Future<void> runLocalCodex() async {
     if (!Platform.isMacOS) {
       status.value = 'Local runner only supported on macOS.';
       return;
     }
-    Get.toNamed(AppRoutes.projects, arguments: const TargetArgs.local());
+    Get.toNamed(DesignRoutes.projects, arguments: const TargetArgs.local());
   }
 
+  @override
   Future<void> testSshConnection() async {
     final port = int.tryParse(portController.text.trim()) ?? 22;
     final profile = _parseProfile();
@@ -178,7 +188,7 @@ class ConnectionController extends GetxController {
       recentProfiles.assignAll(next);
       await _history.saveProfiles(next);
 
-      Get.toNamed(AppRoutes.projects, arguments: TargetArgs.remote(profile));
+      Get.toNamed(DesignRoutes.projects, arguments: TargetArgs.remote(profile));
     } catch (e) {
       // If key auth failed, prompt password and retry (password isn't stored).
       final keyAvailable = privateKeyPem.trim().isNotEmpty;
@@ -199,7 +209,7 @@ class ConnectionController extends GetxController {
             status.value = 'SSH OK: ${output.trim()}';
 
             await _history.saveLast(profile);
-            Get.toNamed(AppRoutes.projects, arguments: TargetArgs.remote(profile));
+            Get.toNamed(DesignRoutes.projects, arguments: TargetArgs.remote(profile));
             return;
           } catch (_) {
             // fall through

@@ -1,6 +1,9 @@
 import 'package:get/get.dart';
+import 'package:design_system/design_system.dart';
 
 import '../../features/connection/connection_controller.dart';
+import '../../features/settings/keys/keys_controller.dart';
+import '../../features/settings/keys/install_key_controller.dart';
 import '../../services/connection_history_service.dart';
 import '../../services/codex_session_store.dart';
 import '../../services/conversation_store.dart';
@@ -35,6 +38,8 @@ class InitialBinding extends Bindings {
         Get.put<AppLifecycleService>(AppLifecycleService(), permanent: true);
     lifecycle.start();
 
-    Get.lazyPut<ConnectionController>(() => ConnectionController());
+    Get.lazyPut<ConnectionControllerBase>(() => ConnectionController());
+    Get.lazyPut<KeysControllerBase>(() => KeysController());
+    Get.lazyPut<InstallKeyControllerBase>(() => InstallKeyController());
   }
 }

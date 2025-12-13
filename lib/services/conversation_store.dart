@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../models/conversation.dart';
+import 'package:design_system/design_system.dart';
 
 class ConversationStore {
   static String _key(String targetKey, String projectPath) =>

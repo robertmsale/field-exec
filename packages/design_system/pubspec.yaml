@@ -1,0 +1,26 @@
+name: design_system
+description: Shared UI (pages/widgets) and base controllers for Codex Remote.
+publish_to: 'none'
+
+version: 0.0.1
+
+environment:
+  sdk: ^3.10.3
+
+dependencies:
+  flutter:
+    sdk: flutter
+  get: ^4.7.3
+  provider: ^6.1.5
+  flutter_chat_ui: ^2.11.1
+  flutter_chat_types: ^3.6.2
+  flutter_chat_core: ^2.9.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+

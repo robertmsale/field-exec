@@ -1,18 +1,21 @@
 import 'package:flutter/material.dart';
+import 'package:design_system/design_system.dart';
 import 'package:get/get.dart';
 import 'package:uuid/uuid.dart';
 
-import '../../models/project.dart';
 import '../../services/project_store.dart';
-import 'target_args.dart';
 
-class ProjectsController extends GetxController {
+class ProjectsController extends ProjectsControllerBase {
+  @override
   final TargetArgs target;
 
   ProjectsController({required this.target});
 
+  @override
   final projects = <Project>[].obs;
+  @override
   final isBusy = false.obs;
+  @override
   final status = ''.obs;
 
   final _uuid = const Uuid();
@@ -35,6 +38,7 @@ class ProjectsController extends GetxController {
     }
   }
 
+  @override
   Future<Project?> promptAddProject() async {
     final pathController = TextEditingController();
     final nameController = TextEditingController();
@@ -94,6 +98,7 @@ class ProjectsController extends GetxController {
     }
   }
 
+  @override
   Future<void> addProject(Project project) async {
     final next = [project, ...projects].take(25).toList(growable: false);
     projects.assignAll(next);
@@ -101,10 +106,10 @@ class ProjectsController extends GetxController {
     await _store.saveLastProjectId(targetKey: target.targetKey, projectId: project.id);
   }
 
+  @override
   Future<void> deleteProject(Project project) async {
     final next = projects.where((p) => p.id != project.id).toList(growable: false);
     projects.assignAll(next);
     await _store.saveProjects(targetKey: target.targetKey, projects: next);
   }
 }
-

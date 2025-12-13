@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../models/connection_profile.dart';
+import 'package:design_system/design_system.dart';
 
 class ConnectionHistoryService {
   static const _profilesKey = 'connection_profiles_v1';
@@ -39,4 +39,3 @@ class ConnectionHistoryService {
     await prefs.setString(_lastKey, jsonEncode(profile.toJson()));
   }
 }
-

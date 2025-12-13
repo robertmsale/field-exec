@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../models/project_tab.dart';
+import 'package:design_system/design_system.dart';
 
 class ProjectTabsStore {
   static String _keyFor(String targetKey, String projectPath) =>
@@ -39,4 +39,3 @@ class ProjectTabsStore {
     await prefs.setString(_keyFor(targetKey, projectPath), json);
   }
 }
-

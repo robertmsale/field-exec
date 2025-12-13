@@ -62,6 +62,15 @@ Run iOS (device or simulator):
 flutter run -d ios
 ```
 
+## UI Catalog (widgetbook)
+
+To iterate on UI without running Codex Remote’s services, run the standalone catalog app:
+
+```bash
+cd packages/widgetbook
+flutter run -d macos
+```
+
 ### macOS sandbox note
 
 Local execution requires the macOS App Sandbox to be disabled. This repo sets:

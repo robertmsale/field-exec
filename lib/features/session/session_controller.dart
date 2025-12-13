@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:design_system/design_system.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:get/get.dart';
@@ -19,17 +20,24 @@ import '../../services/notification_service.dart';
 import '../../services/secure_storage_service.dart';
 import '../../services/remote_jobs_store.dart';
 import '../../services/ssh_service.dart';
-import '../projects/target_args.dart';
 
-class SessionController extends GetxController {
+class SessionController extends SessionControllerBase {
   final TargetArgs target;
   final String projectPath;
   final String tabId;
+  @override
   final InMemoryChatController chatController;
+  @override
   final TextEditingController inputController = TextEditingController();
 
+  @override
   final isRunning = false.obs;
+  @override
   final threadId = RxnString();
+  @override
+  final remoteJobId = RxnString();
+  @override
+  final thinkingPreview = RxnString();
 
   final _uuid = const Uuid();
   void Function()? _cancelCurrent;
@@ -58,6 +66,7 @@ class SessionController extends GetxController {
   Worker? _activeWorker;
   final _recentLogLines = <String>[];
   final _recentLogLineSet = <String>{};
+  var _autoCommitCatchUpInProgress = false;
 
   SessionController({
     required this.target,
@@ -78,12 +87,13 @@ class SessionController extends GetxController {
   static const _me = 'user';
   static const _codex = 'codex';
   static const _system = 'system';
+  static const _clientUserMessageType = 'client.user_message';
+  static const _clientGitCommitType = 'client.git_commit';
 
   @override
   void onInit() {
     super.onInit();
     _loadThreadId();
-    _insertWelcome();
     if (!target.local) {
       _maybeReattachRemote();
     }
@@ -122,6 +132,7 @@ class SessionController extends GetxController {
     super.onClose();
   }
 
+  @override
   Future<User> resolveUser(UserID id) async {
     if (id == _me) return const User(id: _me, name: 'You');
     if (id == _codex) return const User(id: _codex, name: 'Codex');
@@ -130,6 +141,7 @@ class SessionController extends GetxController {
 
   Future<void> resetThread() async {
     threadId.value = null;
+    thinkingPreview.value = null;
     await _sessionStore.clearThreadId(
       targetKey: target.targetKey,
       projectPath: projectPath,
@@ -137,9 +149,9 @@ class SessionController extends GetxController {
     );
     await chatController.setMessages([]);
     _pendingActionsMessage = null;
-    await _insertWelcome();
   }
 
+  @override
   Future<void> resumeThreadById(String id, {String? preview}) async {
     await _consumePendingActions();
     threadId.value = id;
@@ -162,10 +174,12 @@ class SessionController extends GetxController {
     } catch (_) {}
   }
 
+  @override
   void stop() {
     _cancelCurrent?.call();
   }
 
+  @override
   Future<void> sendText(String text) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
@@ -186,6 +200,7 @@ class SessionController extends GetxController {
     await _runCodexTurn(prompt: trimmed);
   }
 
+  @override
   Future<void> sendQuickReply(String value) => sendText(value);
 
   Future<void> _loadThreadId() async {
@@ -204,25 +219,6 @@ class SessionController extends GetxController {
       projectPath: projectPath,
       tabId: tabId,
       threadId: id,
-    );
-  }
-
-  Future<void> _insertWelcome() async {
-    await chatController.insertMessage(
-      _welcomeMessage(),
-    );
-  }
-
-  Message _welcomeMessage() {
-    return Message.custom(
-      id: _uuid.v4(),
-      authorId: _system,
-      createdAt: DateTime.now().toUtc(),
-      metadata: const {
-        'kind': 'codex_event',
-        'eventType': 'welcome',
-        'text': 'Uses `codex exec --json --output-schema` and renders events + actions.',
-      },
     );
   }
 
@@ -409,6 +405,7 @@ class SessionController extends GetxController {
 
     if (target.local) {
       isRunning.value = true;
+      thinkingPreview.value = null;
       _cancelCurrent = null;
       try {
         await _ensureCodexRemoteDirsLocal();
@@ -436,11 +433,122 @@ class SessionController extends GetxController {
       } finally {
         _cancelCurrent = null;
         isRunning.value = false;
+        thinkingPreview.value = null;
       }
       return;
     }
 
     await _runRemoteViaTmux(prompt: prompt);
+  }
+
+  String _clientUserMessageJsonlLine(String text) {
+    final payload = <String, Object?>{
+      'type': _clientUserMessageType,
+      'text': text,
+      'created_at_ms_utc': DateTime.now().toUtc().millisecondsSinceEpoch,
+    };
+    final currentThread = threadId.value;
+    if (currentThread != null && currentThread.isNotEmpty) {
+      payload['thread_id'] = currentThread;
+    }
+    return jsonEncode(payload);
+  }
+
+  String _clientGitCommitJsonlLine({
+    required String status,
+    required String commitMessage,
+    String? reason,
+    String? stdout,
+    String? stderr,
+    String? sourceItemId,
+  }) {
+    final payload = <String, Object?>{
+      'type': _clientGitCommitType,
+      'status': status,
+      'commit_message': commitMessage,
+      'created_at_ms_utc': DateTime.now().toUtc().millisecondsSinceEpoch,
+      'target': target.local ? 'local' : 'remote',
+    };
+    final currentThread = threadId.value;
+    if (currentThread != null && currentThread.isNotEmpty) {
+      payload['thread_id'] = currentThread;
+    }
+    if (sourceItemId != null && sourceItemId.isNotEmpty) {
+      payload['source_item_id'] = sourceItemId;
+    }
+    if (reason != null && reason.isNotEmpty) {
+      payload['reason'] = reason;
+    }
+    if (stdout != null && stdout.isNotEmpty) {
+      payload['stdout'] = stdout;
+    }
+    if (stderr != null && stderr.isNotEmpty) {
+      payload['stderr'] = stderr;
+    }
+    return jsonEncode(payload);
+  }
+
+  Future<void> _appendRemoteUserMessageToLog({
+    required String prompt,
+    required String logAbsPath,
+  }) async {
+    final profile = target.profile!;
+    final pem =
+        await _storage.read(key: SecureStorageService.sshPrivateKeyPemKey);
+
+    final line = _clientUserMessageJsonlLine(prompt);
+    final cmd = 'printf %s\\\\n ${_shQuote(line)} >> ${_shQuote(logAbsPath)}';
+    await _ssh.runCommandWithResult(
+      host: profile.host,
+      port: profile.port,
+      username: profile.username,
+      privateKeyPem: pem,
+      password: _sshPassword,
+      command: 'sh -c ${_shQuote(cmd)}',
+    );
+  }
+
+  Future<void> _appendClientJsonlToLog({
+    required String jsonlLine,
+  }) async {
+    if (target.local) {
+      await _ensureCodexRemoteDirsLocal();
+      final file = File(_joinPosix(projectPath, _logRelPath));
+      await file.writeAsString('$jsonlLine\n', mode: FileMode.append);
+      return;
+    }
+
+    final profile = target.profile!;
+    final pem =
+        await _storage.read(key: SecureStorageService.sshPrivateKeyPemKey);
+    final logAbsPath = _remoteAbsPath(_logRelPath);
+    final cmd = 'printf %s\\\\n ${_shQuote(jsonlLine)} >> ${_shQuote(logAbsPath)}';
+    try {
+      await _ssh.runCommandWithResult(
+        host: profile.host,
+        port: profile.port,
+        username: profile.username,
+        privateKeyPem: pem,
+        password: _sshPassword,
+        command: 'sh -c ${_shQuote(cmd)}',
+      );
+    } catch (_) {
+      if (_sshPassword == null) {
+        final pw = await _promptForPassword();
+        if (pw == null || pw.isEmpty) rethrow;
+        _sshPassword = pw;
+        await _ssh.runCommandWithResult(
+          host: profile.host,
+          port: profile.port,
+          username: profile.username,
+          privateKeyPem: pem,
+          password: _sshPassword,
+          command: 'sh -c ${_shQuote(cmd)}',
+        );
+        return;
+      }
+      rethrow;
+    }
   }
 
   Future<void> _runLocal(CodexCommand cmd) async {
@@ -468,6 +576,7 @@ class SessionController extends GetxController {
   Future<void> _runRemoteViaTmux({required String prompt}) async {
     if (isRunning.value) return;
     isRunning.value = true;
+    thinkingPreview.value = null;
     _cancelCurrent = () {
       final launch = _remoteLaunchProc;
       if (launch != null) {
@@ -475,6 +584,7 @@ class SessionController extends GetxController {
         _remoteLaunchProc = null;
         _cancelTailOnly();
         isRunning.value = false;
+        thinkingPreview.value = null;
         _cancelCurrent = null;
         return;
       }
@@ -482,6 +592,7 @@ class SessionController extends GetxController {
         _cancelTailOnly();
         _cancelCurrent = null;
         isRunning.value = false;
+        thinkingPreview.value = null;
       });
     };
 
@@ -517,34 +628,25 @@ class SessionController extends GetxController {
 
       await _startRemoteLogTailIfNeeded();
 
-      final promptRel = '$_tmpDirRelPath/prompt-${_uuid.v4()}.txt';
-      final promptAbs = _remoteAbsPath(promptRel);
-      await _ssh.writeRemoteFile(
-        host: profile.host,
-        port: profile.port,
-        username: profile.username,
-        privateKeyPem: pem,
-        password: _sshPassword,
-        remotePath: promptAbs,
-        contents: cmd.stdin,
-      );
-
       final tmuxName =
           'cr_${tabId.replaceAll('-', '').substring(0, 8)}_${DateTime.now().millisecondsSinceEpoch}';
-
-      final runRel = '$_tmpDirRelPath/run-${_uuid.v4()}.sh';
-      final runAbs = _remoteAbsPath(runRel);
 
       final logAbs = _remoteAbsPath(_logRelPath);
       final errAbs = _remoteAbsPath(_stderrLogRelPath);
       final pidAbs = _remoteAbsPath(_pidRelPath);
       final jobAbs = _remoteAbsPath(_jobRelPath);
 
+      // Persist the user prompt into the JSONL log so rehydration can show it and
+      // so the remote job can read it back as stdin without creating temp files.
+      await _appendRemoteUserMessageToLog(prompt: prompt, logAbsPath: logAbs);
+
       final codexArgs = CodexCommandBuilder.shellString(cmd.args);
-      final runScript = [
-        '#!/bin/sh',
+      final runBody = [
         'set -e',
         'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
+        'LOG=${_shQuote(logAbs)}',
+        'ERR=${_shQuote(errAbs)}',
+        'exec >> "\$LOG" 2>> "\$ERR"',
         'CODEX_BIN="\$(command -v codex 2>/dev/null || true)"',
         'if [ -z "\$CODEX_BIN" ]; then',
         '  for p in /opt/homebrew/bin/codex /usr/local/bin/codex "\$HOME/.local/bin/codex" /usr/bin/codex; do',
@@ -552,18 +654,35 @@ class SessionController extends GetxController {
         '  done',
         'fi',
         'if [ -z "\$CODEX_BIN" ]; then echo "codex not found" >&2; exit 127; fi',
-        '"\$CODEX_BIN" $codexArgs < ${_shQuote(promptAbs)} >> ${_shQuote(logAbs)} 2>> ${_shQuote(errAbs)}',
+        'JQ_BIN="\$(command -v jq 2>/dev/null || true)"',
+        'if [ -z "\$JQ_BIN" ]; then',
+        '  for p in /opt/homebrew/bin/jq /usr/local/bin/jq "\$HOME/.local/bin/jq" /usr/bin/jq; do',
+        '    if [ -x "\$p" ]; then JQ_BIN="\$p"; break; fi',
+        '  done',
+        'fi',
+        'PLUTIL_BIN="\$(command -v plutil 2>/dev/null || true)"',
+        'if [ -z "\$PLUTIL_BIN" ]; then',
+        '  for p in /usr/bin/plutil; do',
+        '    if [ -x "\$p" ]; then PLUTIL_BIN="\$p"; break; fi',
+        '  done',
+        'fi',
+        'line="\$(tail -n 1 "\$LOG" 2>/dev/null || true)"',
+        'prompt=""',
+        'if [ -n "\$line" ] && [ -n "\$JQ_BIN" ]; then',
+        '  prompt="\$(printf %s\\\\n "\$line" | "\$JQ_BIN" -r \'select(.type=="client.user_message") | (.text // empty)\' 2>/dev/null || true)"',
+        'fi',
+        'if [ -z "\$prompt" ] && [ -n "\$line" ] && [ -n "\$PLUTIL_BIN" ]; then',
+        '  t="\$(printf %s\\\\n "\$line" | "\$PLUTIL_BIN" -extract type raw -o - - 2>/dev/null || true)"',
+        '  if [ "\$t" = "client.user_message" ]; then',
+        '    prompt="\$(printf %s\\\\n "\$line" | "\$PLUTIL_BIN" -extract text raw -o - - 2>/dev/null || true)"',
+        '  fi',
+        'fi',
+        'if [ -z "\$prompt" ]; then',
+        '  echo "Failed to extract prompt from last JSONL log line (install jq or ensure plutil is available)." >&2',
+        '  exit 2',
+        'fi',
+        'printf %s\\\\n "\$prompt" | "\$CODEX_BIN" $codexArgs',
       ].join('\n');
-
-      await _ssh.writeRemoteFile(
-        host: profile.host,
-        port: profile.port,
-        username: profile.username,
-        privateKeyPem: pem,
-        password: _sshPassword,
-        remotePath: runAbs,
-        contents: runScript,
-      );
 
       final startBody = [
         'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
@@ -576,11 +695,11 @@ class SessionController extends GetxController {
         'fi',
         'rm -f ${_shQuote(jobAbs)} >/dev/null 2>&1 || true',
         'if [ -n "\$TMUX_BIN" ]; then',
-        '  "\$TMUX_BIN" new-session -d -s ${_shQuote(tmuxName)} sh ${_shQuote(runAbs)}',
+        '  "\$TMUX_BIN" new-session -d -s ${_shQuote(tmuxName)} sh -c ${_shQuote(runBody)}',
         '  echo "tmux:$tmuxName" > ${_shQuote(jobAbs)}',
         '  printf %s\\\\n "CODEX_REMOTE_JOB=tmux:$tmuxName"',
         'else',
-        '  nohup sh ${_shQuote(runAbs)} >/dev/null 2>&1 &',
+        '  nohup sh -c ${_shQuote(runBody)} >/dev/null 2>&1 &',
         '  pid=\$!',
         '  echo "\$pid" > ${_shQuote(pidAbs)}',
         '  echo "pid:\$pid" > ${_shQuote(jobAbs)}',
@@ -654,6 +773,7 @@ class SessionController extends GetxController {
       }
 
       _remoteJobId = remoteJobId;
+      this.remoteJobId.value = remoteJobId;
       await _sessionStore.saveRemoteJobId(
         targetKey: target.targetKey,
         projectPath: projectPath,
@@ -678,7 +798,7 @@ class SessionController extends GetxController {
           );
         }
       } catch (_) {}
-      await _insertEvent(type: 'remote_job', text: remoteJobId);
+      // Render remote job status in the session status bar (not as a chat bubble).
     } catch (e) {
       try {
         _remoteLaunchProc?.cancel();
@@ -687,6 +807,7 @@ class SessionController extends GetxController {
       await _insertEvent(type: 'error', text: 'Remote start failed: $e');
       _cancelCurrent = null;
       isRunning.value = false;
+      remoteJobId.value = null;
     }
   }
 
@@ -771,8 +892,10 @@ class SessionController extends GetxController {
           tabId: tabId,
         );
     _remoteJobId = stored;
+    remoteJobId.value = stored;
     if (stored == null || stored.isEmpty) {
       isRunning.value = false;
+      thinkingPreview.value = null;
       _cancelCurrent = null;
       _cancelTailOnly();
       return;
@@ -837,7 +960,9 @@ class SessionController extends GetxController {
       );
     } catch (_) {}
     _remoteJobId = null;
+    remoteJobId.value = null;
     isRunning.value = false;
+    thinkingPreview.value = null;
     _cancelCurrent = null;
     _cancelTailOnly();
   }
@@ -906,6 +1031,7 @@ class SessionController extends GetxController {
       );
     } catch (_) {}
     _remoteJobId = null;
+    remoteJobId.value = null;
   }
 
   Future<void> _maybeReattachRemote() async {
@@ -916,6 +1042,7 @@ class SessionController extends GetxController {
         tabId: tabId,
       );
       _remoteJobId = stored;
+      remoteJobId.value = stored;
 
       await _rehydrateFromRemoteLog(maxLines: 200);
 
@@ -982,6 +1109,7 @@ class SessionController extends GetxController {
           );
         } catch (_) {}
         _remoteJobId = null;
+        remoteJobId.value = null;
         _cancelCurrent = null;
         isRunning.value = false;
       }
@@ -1045,7 +1173,6 @@ class SessionController extends GetxController {
 
       _pendingActionsMessage = null;
       final backfill = <Message>[
-        _welcomeMessage(),
         _eventMessage(
           type: 'replay',
           text: 'Replayed last ${lines.length} log lines.',
@@ -1067,8 +1194,145 @@ class SessionController extends GetxController {
       }
 
       await chatController.setMessages(backfill, animated: false);
+      await _maybeCatchUpAutoCommitFromHydratedLog(
+        lines: lines,
+        startIndex: 0,
+      );
     } catch (_) {
       // Best-effort.
+    }
+  }
+
+  Future<bool> _remoteLogHasGitCommitMarker({
+    required String sourceItemId,
+  }) async {
+    if (target.local) return false;
+    final profile = target.profile!;
+    final pem =
+        await _storage.read(key: SecureStorageService.sshPrivateKeyPemKey);
+    final logAbs = _remoteAbsPath(_logRelPath);
+    final pattern = _shQuote(
+      '"type":"$_clientGitCommitType","status":"(completed|skipped|failed)".*"source_item_id":"$sourceItemId"',
+    );
+    final cmd =
+        'sh -c ${_shQuote('grep -qE $pattern ${_shQuote(logAbs)} 2>/dev/null')}';
+    try {
+      final res = await _ssh.runCommandWithResult(
+        host: profile.host,
+        port: profile.port,
+        username: profile.username,
+        privateKeyPem: pem,
+        password: _sshPassword,
+        command: cmd,
+      );
+      return (res.exitCode ?? 1) == 0;
+    } catch (_) {
+      if (_sshPassword == null) {
+        try {
+          final pw = await _promptForPassword();
+          if (pw == null || pw.isEmpty) return false;
+          _sshPassword = pw;
+          final res = await _ssh.runCommandWithResult(
+            host: profile.host,
+            port: profile.port,
+            username: profile.username,
+            privateKeyPem: pem,
+            password: _sshPassword,
+            command: cmd,
+          );
+          return (res.exitCode ?? 1) == 0;
+        } catch (_) {
+          return false;
+        }
+      }
+      return false;
+    }
+  }
+
+  Future<void> _maybeCatchUpAutoCommitFromHydratedLog({
+    required List<String> lines,
+    required int startIndex,
+  }) async {
+    if (isRunning.value) return;
+    if (_autoCommitCatchUpInProgress) return;
+    if (!target.local) {
+      final job = remoteJobId.value;
+      if (job != null && job.isNotEmpty) return;
+    }
+
+    String? lastCommitMessage;
+    String? lastSourceItemId;
+    final committedSourceIds = <String>{};
+
+    for (final line in lines) {
+      if (line.trim().isEmpty) continue;
+      try {
+        final decoded = jsonDecode(line);
+        if (decoded is! Map) continue;
+        final map = decoded.cast<String, Object?>();
+        final type = map['type']?.toString();
+        if (type == _clientGitCommitType) {
+          final status = map['status']?.toString() ?? '';
+          if (status == 'started') continue;
+          final sid = map['source_item_id']?.toString() ?? '';
+          if (sid.isNotEmpty) committedSourceIds.add(sid);
+          continue;
+        }
+      } catch (_) {}
+    }
+
+    for (final line in lines.skip(startIndex)) {
+      if (line.trim().isEmpty) continue;
+      try {
+        final decoded = jsonDecode(line);
+        if (decoded is! Map) continue;
+        final map = decoded.cast<String, Object?>();
+        final type = map['type']?.toString();
+        if (type == null || !type.startsWith('item.')) continue;
+        final item = map['item'];
+        if (item is! Map) continue;
+        final itemType = item['type']?.toString();
+        if (itemType != 'agent_message') continue;
+        final itemId = item['id']?.toString();
+        final text = item['text']?.toString() ?? '';
+        final structured = jsonDecode(text);
+        if (structured is! Map) continue;
+        final resp = CodexStructuredResponse.fromJson(
+          structured.cast<String, Object?>(),
+        );
+        final commitMessage = resp.commitMessage.trim();
+        lastCommitMessage = commitMessage.isEmpty ? null : commitMessage;
+        lastSourceItemId = itemId;
+      } catch (_) {}
+    }
+
+    final commitMessage = lastCommitMessage;
+    final sourceItemId = lastSourceItemId;
+    if (commitMessage == null || commitMessage.isEmpty) return;
+    if (sourceItemId == null || sourceItemId.isEmpty) return;
+
+    if (committedSourceIds.contains(sourceItemId)) return;
+    if (!target.local) {
+      final alreadyLogged = await _remoteLogHasGitCommitMarker(sourceItemId: sourceItemId);
+      if (alreadyLogged) return;
+    } else {
+      final marker =
+          '"type":"$_clientGitCommitType"';
+      final source = '"source_item_id":"$sourceItemId"';
+      final hasFinalMarker = lines.any(
+        (l) =>
+            l.contains(marker) &&
+            l.contains(source) &&
+            !l.contains('"status":"started"'),
+      );
+      if (hasFinalMarker) return;
+    }
+
+    _autoCommitCatchUpInProgress = true;
+    try {
+      await _maybeAutoCommit(commitMessage, sourceItemId: sourceItemId);
+    } finally {
+      _autoCommitCatchUpInProgress = false;
     }
   }
 
@@ -1171,7 +1435,6 @@ class SessionController extends GetxController {
     final start = _findFocusStartIndex(lines, focusThreadId);
     _pendingActionsMessage = null;
     final backfill = <Message>[
-      _welcomeMessage(),
       _eventMessage(
         type: 'replay',
         text: 'Replayed ${lines.length} lines from $logRelPath.',
@@ -1193,6 +1456,7 @@ class SessionController extends GetxController {
     }
 
     await chatController.setMessages(backfill, animated: false);
+    await _maybeCatchUpAutoCommitFromHydratedLog(lines: lines, startIndex: start);
   }
 
   Future<void> _rehydrateFromLocalLog({
@@ -1217,7 +1481,6 @@ class SessionController extends GetxController {
     final start = _findFocusStartIndex(tail, focusThreadId);
     _pendingActionsMessage = null;
     final backfill = <Message>[
-      _welcomeMessage(),
       _eventMessage(
         type: 'replay',
         text: 'Replayed ${tail.length} local log lines from $logRelPath.',
@@ -1239,6 +1502,7 @@ class SessionController extends GetxController {
     }
 
     await chatController.setMessages(backfill, animated: false);
+    await _maybeCatchUpAutoCommitFromHydratedLog(lines: tail, startIndex: start);
   }
 
   static int _findFocusStartIndex(List<String> lines, String? focusThreadId) {
@@ -1252,7 +1516,16 @@ class SessionController extends GetxController {
         if (decoded is Map) {
           final type = decoded['type']?.toString();
           final id = decoded['thread_id']?.toString();
-          if (type == 'thread.started' && id == focusThreadId) return i;
+          if (type == 'thread.started' && id == focusThreadId) {
+            // Include the immediately preceding user prompt line if present.
+            if (i > 0) {
+              final prev = lines[i - 1];
+              if (prev.contains('"type":"$_clientUserMessageType"')) {
+                return i - 1;
+              }
+            }
+            return i;
+          }
         }
       } catch (_) {}
     }
@@ -1338,6 +1611,11 @@ class SessionController extends GetxController {
     final type = event['type'] as String?;
     if (type == null || type.isEmpty) return;
 
+    // Prompts are inserted into chat immediately; keep them out of the live
+    // stream to avoid duplicates. Rehydration renders them from the log instead.
+    if (type == _clientUserMessageType) return;
+    if (type == _clientGitCommitType) return;
+
     if (type == 'thread.started') {
       final id = event['thread_id'] as String?;
       if (id != null && id.isNotEmpty) {
@@ -1371,27 +1649,34 @@ class SessionController extends GetxController {
           } catch (_) {}
         }
       }
-      await _insertEvent(type: type, text: 'thread_id=${id ?? ''}');
       return;
     }
 
     if (type == 'turn.started' || type == 'turn.completed' || type == 'turn.failed') {
-      await _insertEvent(type: type, text: _compact(event));
-
       if (type == 'turn.started' && !isRunning.value) {
         isRunning.value = true;
+        thinkingPreview.value = null;
         if (!target.local) {
           _cancelCurrent ??= () {
             _stopRemoteJob().whenComplete(() {
               _cancelTailOnly();
               _cancelCurrent = null;
               isRunning.value = false;
+              thinkingPreview.value = null;
             });
           };
         }
       }
 
       if (type == 'turn.completed' || type == 'turn.failed') {
+        if (type == 'turn.failed') {
+          final err = event['error']?.toString();
+          final trimmed = err?.trim();
+          await _insertEvent(
+            type: 'turn.failed',
+            text: trimmed == null || trimmed.isEmpty ? 'Turn failed.' : trimmed,
+          );
+        }
         // Best-effort: notify even if user is on a different screen/tab.
         try {
           final active = _activeSession.active;
@@ -1426,8 +1711,10 @@ class SessionController extends GetxController {
           );
         } catch (_) {}
         _remoteJobId = null;
+        remoteJobId.value = null;
         _cancelCurrent = null;
         isRunning.value = false;
+        thinkingPreview.value = null;
       }
       return;
     }
@@ -1436,9 +1723,27 @@ class SessionController extends GetxController {
       final item = event['item'];
       if (item is Map) {
         final itemType = item['type'] as String?;
+        if (itemType == 'reasoning') {
+          final raw = (item['text'] as Object?)?.toString() ?? '';
+          final oneLine = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
+          if (oneLine.isNotEmpty && isRunning.value) {
+            thinkingPreview.value =
+                oneLine.length > 160 ? '${oneLine.substring(0, 160)}…' : oneLine;
+          }
+          return;
+        }
+        if (type == 'item.started') {
+          // Reduce noise: started items are typically intermediate state.
+          return;
+        }
         if (itemType == 'agent_message') {
           final text = item['text'] as String? ?? '';
-          final messages = await _materializeAgentMessage(text, replay: false);
+          final itemId = item['id']?.toString();
+          final messages = await _materializeAgentMessage(
+            text,
+            replay: false,
+            sourceItemId: itemId,
+          );
           if (messages.isNotEmpty) {
             await chatController.insertAllMessages(messages, animated: true);
           }
@@ -1465,6 +1770,7 @@ class SessionController extends GetxController {
   Future<List<Message>> _materializeAgentMessage(
     String text, {
     required bool replay,
+    String? sourceItemId,
   }) async {
     // With --output-schema, agent_message should be a JSON object matching it.
     try {
@@ -1491,7 +1797,7 @@ class SessionController extends GetxController {
         );
 
         if (!replay && commitMessage.isNotEmpty) {
-          await _maybeAutoCommit(commitMessage);
+          await _maybeAutoCommit(commitMessage, sourceItemId: sourceItemId);
         }
 
         if (resp.actions.isNotEmpty) {
@@ -1532,6 +1838,43 @@ class SessionController extends GetxController {
     final type = event['type'] as String?;
     if (type == null || type.isEmpty) return const [];
 
+    if (type == _clientUserMessageType) {
+      final text = event['text']?.toString() ?? '';
+      final createdAtMs = event['created_at_ms_utc'];
+      final createdAt = createdAtMs is int
+          ? DateTime.fromMillisecondsSinceEpoch(createdAtMs, isUtc: true)
+          : DateTime.now().toUtc();
+      return [
+        Message.text(
+          id: _uuid.v4(),
+          authorId: _me,
+          createdAt: createdAt,
+          text: text,
+        ),
+      ];
+    }
+
+    if (type == _clientGitCommitType) {
+      final status = event['status']?.toString().trim() ?? '';
+      final msg = event['commit_message']?.toString().trim() ?? '';
+      final reason = event['reason']?.toString().trim() ?? '';
+      final stderr = event['stderr']?.toString().trim() ?? '';
+
+      final summary = [
+        if (status.isNotEmpty) status,
+        if (reason.isNotEmpty) reason,
+        if (msg.isNotEmpty) msg,
+        if (stderr.isNotEmpty && (status == 'failed')) stderr,
+      ].join(' • ');
+
+      return [
+        _eventMessage(
+          type: 'git_commit',
+          text: summary.isEmpty ? 'Auto-commit event.' : summary,
+        ),
+      ];
+    }
+
     if (type == 'thread.started') {
       final id = event['thread_id'] as String?;
       if (id != null && id.isNotEmpty) {
@@ -1547,20 +1890,33 @@ class SessionController extends GetxController {
           );
         }
       }
-      return [_eventMessage(type: type, text: 'thread_id=${id ?? ''}')];
+      return const [];
     }
 
     if (type == 'turn.started' || type == 'turn.completed' || type == 'turn.failed') {
-      return [_eventMessage(type: type, text: _compact(event))];
+      if (type == 'turn.failed') {
+        final err = event['error']?.toString();
+        final trimmed = err?.trim();
+        return [
+          _eventMessage(
+            type: 'turn.failed',
+            text: trimmed == null || trimmed.isEmpty ? 'Turn failed.' : trimmed,
+          ),
+        ];
+      }
+      return const [];
     }
 
     if (type.startsWith('item.')) {
       final item = event['item'];
       if (item is Map) {
+        if (type == 'item.started') return const [];
         final itemType = item['type'] as String? ?? 'unknown';
+        if (itemType == 'reasoning') return const [];
         if (itemType == 'agent_message') {
           final text = item['text'] as String? ?? '';
-          return _materializeAgentMessage(text, replay: replay);
+          final itemId = item['id']?.toString();
+          return _materializeAgentMessage(text, replay: replay, sourceItemId: itemId);
         }
         return [
           _itemMessage(
@@ -1596,20 +1952,47 @@ class SessionController extends GetxController {
     }
   }
 
-  Future<void> _maybeAutoCommit(String commitMessage) async {
+  Future<void> _maybeAutoCommit(
+    String commitMessage, {
+    String? sourceItemId,
+  }) async {
+    final trimmed = commitMessage.trim();
+    if (trimmed.isEmpty) return;
+
     try {
       if (target.local) {
-        await _maybeAutoCommitLocal(commitMessage);
+        await _maybeAutoCommitLocal(trimmed, sourceItemId: sourceItemId);
       } else {
-        await _maybeAutoCommitRemote(commitMessage);
+        await _maybeAutoCommitRemote(trimmed, sourceItemId: sourceItemId);
       }
     } catch (e) {
       await _insertEvent(type: 'git_commit_failed', text: '$e');
+      try {
+        await _appendClientJsonlToLog(
+          jsonlLine: _clientGitCommitJsonlLine(
+            status: 'failed',
+            commitMessage: trimmed,
+            stderr: '$e',
+            sourceItemId: sourceItemId,
+          ),
+        );
+      } catch (_) {}
     }
   }
 
-  Future<void> _maybeAutoCommitLocal(String commitMessage) async {
+  Future<void> _maybeAutoCommitLocal(
+    String commitMessage, {
+    String? sourceItemId,
+  }) async {
     await _ensureCodexRemoteExcludedLocal();
+
+    await _appendClientJsonlToLog(
+      jsonlLine: _clientGitCommitJsonlLine(
+        status: 'started',
+        commitMessage: commitMessage,
+        sourceItemId: sourceItemId,
+      ),
+    );
 
     final status = await _localShell.run(
       executable: 'git',
@@ -1618,9 +2001,35 @@ class SessionController extends GetxController {
       throwOnError: false,
     );
 
+    if (status.exitCode != 0) {
+      final err = (status.stderr as Object?).toString().trim();
+      await _insertEvent(
+        type: 'git_commit_failed',
+        text: err.isEmpty ? 'git status failed.' : err,
+      );
+      await _appendClientJsonlToLog(
+        jsonlLine: _clientGitCommitJsonlLine(
+          status: 'failed',
+          commitMessage: commitMessage,
+          reason: 'git_status_failed',
+          stderr: err,
+          sourceItemId: sourceItemId,
+        ),
+      );
+      return;
+    }
+
     final changes = (status.stdout as Object?).toString().trim();
     if (changes.isEmpty) {
       await _insertEvent(type: 'git_commit_skipped', text: 'No changes to commit.');
+      await _appendClientJsonlToLog(
+        jsonlLine: _clientGitCommitJsonlLine(
+          status: 'skipped',
+          commitMessage: commitMessage,
+          reason: 'no_changes',
+          sourceItemId: sourceItemId,
+        ),
+      );
       return;
     }
 
@@ -1642,17 +2051,30 @@ class SessionController extends GetxController {
     final err = (commit.stderr as Object?).toString().trim();
     if (out.isNotEmpty) await _insertEvent(type: 'git_commit_stdout', text: out);
     if (err.isNotEmpty) await _insertEvent(type: 'git_commit_stderr', text: err);
+
+    await _appendClientJsonlToLog(
+      jsonlLine: _clientGitCommitJsonlLine(
+        status: 'completed',
+        commitMessage: commitMessage,
+        stdout: out,
+        stderr: err,
+        sourceItemId: sourceItemId,
+      ),
+    );
   }
 
-  Future<void> _maybeAutoCommitRemote(String commitMessage) async {
+  Future<void> _maybeAutoCommitRemote(
+    String commitMessage, {
+    String? sourceItemId,
+  }) async {
     final profile = target.profile!;
     final pem = await _storage.read(key: SecureStorageService.sshPrivateKeyPemKey);
 
     String? password = _sshPassword;
 
-    Future<String> run(String cmd) async {
+    Future<SshCommandResult> runWithResult(String cmd) async {
       try {
-        return await _ssh.runCommand(
+        return await _ssh.runCommandWithResult(
           host: profile.host,
           port: profile.port,
           username: profile.username,
@@ -1665,7 +2087,7 @@ class SessionController extends GetxController {
           password = await _promptForPassword();
           if (password == null || password!.isEmpty) rethrow;
           _sshPassword = password;
-          return _ssh.runCommand(
+          return _ssh.runCommandWithResult(
             host: profile.host,
             port: profile.port,
             username: profile.username,
@@ -1678,21 +2100,70 @@ class SessionController extends GetxController {
       }
     }
 
+    await _appendClientJsonlToLog(
+      jsonlLine: _clientGitCommitJsonlLine(
+        status: 'started',
+        commitMessage: commitMessage,
+        sourceItemId: sourceItemId,
+      ),
+    );
+
     final cd = _shQuote(projectPath);
-    await run(
+    await runWithResult(
       'cd $cd && if [ -d .git ]; then mkdir -p .git/info; touch .git/info/exclude; grep -qxF ${_shQuote('.codex_remote/')} .git/info/exclude || printf %s\\\\n ${_shQuote('.codex_remote/')} >> .git/info/exclude; fi',
     );
-    final statusOut = await run('cd $cd && git status --porcelain');
-    if (statusOut.trim().isEmpty) {
+    final statusRes = await runWithResult('cd $cd && git status --porcelain');
+    final statusOut = statusRes.stdout.trim();
+    if ((statusRes.exitCode ?? 1) != 0) {
+      final err = statusRes.stderr.trim();
+      await _insertEvent(
+        type: 'git_commit_failed',
+        text: err.isEmpty ? 'git status failed.' : err,
+      );
+      await _appendClientJsonlToLog(
+        jsonlLine: _clientGitCommitJsonlLine(
+          status: 'failed',
+          commitMessage: commitMessage,
+          reason: 'git_status_failed',
+          stderr: err,
+          sourceItemId: sourceItemId,
+        ),
+      );
+      return;
+    }
+    if (statusOut.isEmpty) {
       await _insertEvent(type: 'git_commit_skipped', text: 'No changes to commit.');
+      await _appendClientJsonlToLog(
+        jsonlLine: _clientGitCommitJsonlLine(
+          status: 'skipped',
+          commitMessage: commitMessage,
+          reason: 'no_changes',
+          sourceItemId: sourceItemId,
+        ),
+      );
       return;
     }
 
     final msg = _shQuote(commitMessage);
-    final commitOut = await run('cd $cd && git add -A && git commit -m $msg || true');
-    if (commitOut.trim().isNotEmpty) {
-      await _insertEvent(type: 'git_commit_stdout', text: commitOut.trim());
+    final commitRes =
+        await runWithResult('cd $cd && git add -A && git commit -m $msg');
+    final out = commitRes.stdout.trim();
+    final err = commitRes.stderr.trim();
+    if (out.isNotEmpty) {
+      await _insertEvent(type: 'git_commit_stdout', text: out);
     }
+    if (err.isNotEmpty) {
+      await _insertEvent(type: 'git_commit_stderr', text: err);
+    }
+    await _appendClientJsonlToLog(
+      jsonlLine: _clientGitCommitJsonlLine(
+        status: (commitRes.exitCode ?? 1) == 0 ? 'completed' : 'failed',
+        commitMessage: commitMessage,
+        stdout: out,
+        stderr: err,
+        sourceItemId: sourceItemId,
+      ),
+    );
   }
 
   static String _shQuote(String s) => "'${s.replaceAll("'", "'\\''")}'";
@@ -1762,19 +2233,45 @@ class SessionController extends GetxController {
       case 'reasoning':
         return (item['text'] as String?) ?? '';
       case 'command_execution':
-        final cmd = item['command']?.toString() ?? '';
+        final cmd =
+            item['command']?.toString() ?? item['text']?.toString() ?? '';
         final code = item['exit_code']?.toString();
+        if (cmd.trim().isEmpty) {
+          return code == null ? 'Command' : 'Command (exit=$code)';
+        }
         return code == null ? cmd : '$cmd (exit=$code)';
       case 'file_change':
-        return item.toString();
+        final path = item['path']?.toString() ?? '';
+        final summary = item['summary']?.toString() ?? '';
+        if (summary.isNotEmpty && path.isNotEmpty) return '$summary — $path';
+        if (path.isNotEmpty) return path;
+        return 'File change';
       case 'mcp_tool_call':
-        return item.toString();
+        final tool = item['tool']?.toString() ?? 'mcp';
+        final topic = item['topic']?.toString() ?? '';
+        return topic.isEmpty ? tool : '$tool: $topic';
       case 'web_search':
-        return item.toString();
+        final query = item['query']?.toString() ?? '';
+        return query.isEmpty ? 'Web search' : 'Search: $query';
       case 'todo_list':
-        return (item['text'] as String?) ?? item.toString();
+        final items = item['items'];
+        if (items is List) {
+          final lines = <String>[];
+          for (final entry in items.whereType<Map>()) {
+            final text = entry['text']?.toString() ?? '';
+            if (text.trim().isEmpty) continue;
+            final completed = entry['completed'] == true;
+            lines.add('${completed ? "[x]" : "[ ]"} $text');
+          }
+          if (lines.isNotEmpty) return lines.join('\n');
+        }
+        return (item['text'] as String?) ?? 'Todo list';
       default:
-        return item.toString();
+        final text = item['text']?.toString() ?? '';
+        if (text.isNotEmpty) return text;
+        final message = item['message']?.toString() ?? '';
+        if (message.isNotEmpty) return message;
+        return itemType ?? 'item';
     }
   }
 
