@@ -9,6 +9,7 @@ import '../../services/active_session_service.dart';
 import '../../models/conversation.dart';
 import 'project_args.dart';
 import 'project_sessions_controller.dart';
+import 'run_command_sheet.dart';
 
 class ProjectSessionsPage extends StatefulWidget {
   const ProjectSessionsPage({super.key});
@@ -98,6 +99,21 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
       appBar: AppBar(
         title: Text(controller.args.project.name),
         actions: [
+          IconButton(
+            tooltip: 'Run command',
+            icon: const Icon(Icons.terminal),
+            onPressed: () async {
+              await showModalBottomSheet<void>(
+                context: context,
+                showDragHandle: true,
+                isScrollControlled: true,
+                builder: (_) => RunCommandSheet(
+                  target: controller.args.target,
+                  projectPath: controller.args.project.path,
+                ),
+              );
+            },
+          ),
           IconButton(
             tooltip: 'Resume conversation',
             icon: const Icon(Icons.history),
