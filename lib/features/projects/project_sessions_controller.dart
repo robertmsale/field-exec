@@ -27,8 +27,10 @@ class ProjectSessionsController extends GetxController {
     _load();
   }
 
+  String _sessionTag(String tabId) => '${args.target.targetKey}|${args.project.path}|$tabId';
+
   SessionController sessionForTab(ProjectTab tab) {
-    return Get.find<SessionController>(tag: tab.id);
+    return Get.find<SessionController>(tag: _sessionTag(tab.id));
   }
 
   Future<void> _load() async {
@@ -57,14 +59,16 @@ class ProjectSessionsController extends GetxController {
 
   void _ensureSessionControllers() {
     for (final tab in tabs) {
-      if (Get.isRegistered<SessionController>(tag: tab.id)) continue;
+      final tag = _sessionTag(tab.id);
+      if (Get.isRegistered<SessionController>(tag: tag)) continue;
       Get.put(
         SessionController(
           target: args.target,
           projectPath: args.project.path,
           tabId: tab.id,
         ),
-        tag: tab.id,
+        tag: tag,
+        permanent: true,
       );
     }
   }
@@ -74,13 +78,15 @@ class ProjectSessionsController extends GetxController {
     final title = 'Tab ${tabs.length + 1}';
     final tab = ProjectTab(id: id, title: title);
 
+    final tag = _sessionTag(id);
     Get.put(
       SessionController(
         target: args.target,
         projectPath: args.project.path,
         tabId: id,
       ),
-      tag: id,
+      tag: tag,
+      permanent: true,
     );
 
     tabs.add(tab);
@@ -108,7 +114,7 @@ class ProjectSessionsController extends GetxController {
       projectPath: args.project.path,
       tabId: tab.id,
     );
-    Get.delete<SessionController>(tag: tab.id, force: true);
+    Get.delete<SessionController>(tag: _sessionTag(tab.id), force: true);
 
     if (tabs.isEmpty) {
       await addTab();

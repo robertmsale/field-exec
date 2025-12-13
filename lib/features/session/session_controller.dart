@@ -43,6 +43,8 @@ class SessionController extends GetxController {
   String get _tmpDirRelPath => '$_codexRemoteDir/tmp';
   String get _logRelPath => '$_sessionsDirRelPath/$tabId.log';
   String get _stderrLogRelPath => '$_sessionsDirRelPath/$tabId.stderr.log';
+  String get _jobRelPath => '$_sessionsDirRelPath/$tabId.job';
+  String get _pidRelPath => '$_sessionsDirRelPath/$tabId.pid';
 
   String? _remoteJobId;
   SshCommandProcess? _remoteLaunchProc;
@@ -50,8 +52,10 @@ class SessionController extends GetxController {
   StreamSubscription<String>? _tailStdoutSub;
   StreamSubscription<String>? _tailStderrSub;
   Future<void> _tailQueue = Future.value();
+  Future<void> _activeQueue = Future.value();
   Object? _tailToken;
   Worker? _lifecycleWorker;
+  Worker? _activeWorker;
   final _recentLogLines = <String>[];
   final _recentLogLineSet = <String>{};
 
@@ -92,11 +96,26 @@ class SessionController extends GetxController {
         _onAppBackgrounded();
       }
     });
+    _activeWorker = ever<ActiveSessionRef?>(_activeSession.activeRx, (ref) {
+      if (target.local) return;
+      final isActive = ref != null &&
+          ref.targetKey == target.targetKey &&
+          ref.projectPath == projectPath &&
+          ref.tabId == tabId;
+      if (!isActive) return;
+      if (_tailProc != null) return;
+      _activeQueue = _activeQueue.then((_) async {
+        try {
+          await _refreshRemoteRunningStateAndTail(backfillLines: 200);
+        } catch (_) {}
+      });
+    });
   }
 
   @override
   void onClose() {
     _lifecycleWorker?.dispose();
+    _activeWorker?.dispose();
     _cancelTailOnly();
     chatController.dispose();
     inputController.dispose();
@@ -278,6 +297,8 @@ class SessionController extends GetxController {
     await File(_joinPosix(projectPath, _logRelPath)).create(recursive: true);
     await File(_joinPosix(projectPath, _stderrLogRelPath))
         .create(recursive: true);
+    await File(_joinPosix(projectPath, _jobRelPath)).create(recursive: true);
+    await File(_joinPosix(projectPath, _pidRelPath)).create(recursive: true);
   }
 
   Future<void> _ensureCodexRemoteDirsRemote() async {
@@ -318,10 +339,12 @@ class SessionController extends GetxController {
     final tmpAbs = _remoteAbsPath(_tmpDirRelPath);
     final logAbs = _remoteAbsPath(_logRelPath);
     final errAbs = _remoteAbsPath(_stderrLogRelPath);
+    final jobAbs = _remoteAbsPath(_jobRelPath);
+    final pidAbs = _remoteAbsPath(_pidRelPath);
 
     final cmd =
-        'mkdir -p ${_shQuote(sessionsAbs)} ${_shQuote(tmpAbs)} && touch ${_shQuote(logAbs)} ${_shQuote(errAbs)}';
-    await run('sh -lc ${_shQuote(cmd)}');
+        'mkdir -p ${_shQuote(sessionsAbs)} ${_shQuote(tmpAbs)} && touch ${_shQuote(logAbs)} ${_shQuote(errAbs)} ${_shQuote(jobAbs)} ${_shQuote(pidAbs)}';
+    await run('sh -c ${_shQuote(cmd)}');
   }
 
   void _cancelTailOnly() {
@@ -514,13 +537,22 @@ class SessionController extends GetxController {
 
       final logAbs = _remoteAbsPath(_logRelPath);
       final errAbs = _remoteAbsPath(_stderrLogRelPath);
-      final pidAbs = _remoteAbsPath('$_sessionsDirRelPath/$tabId.pid');
+      final pidAbs = _remoteAbsPath(_pidRelPath);
+      final jobAbs = _remoteAbsPath(_jobRelPath);
 
-      final codexCmd = 'codex ${CodexCommandBuilder.shellString(cmd.args)}';
+      final codexArgs = CodexCommandBuilder.shellString(cmd.args);
       final runScript = [
         '#!/bin/sh',
         'set -e',
-        '$codexCmd < ${_shQuote(promptAbs)} >> ${_shQuote(logAbs)} 2>> ${_shQuote(errAbs)}',
+        'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
+        'CODEX_BIN="\$(command -v codex 2>/dev/null || true)"',
+        'if [ -z "\$CODEX_BIN" ]; then',
+        '  for p in /opt/homebrew/bin/codex /usr/local/bin/codex "\$HOME/.local/bin/codex" /usr/bin/codex; do',
+        '    if [ -x "\$p" ]; then CODEX_BIN="\$p"; break; fi',
+        '  done',
+        'fi',
+        'if [ -z "\$CODEX_BIN" ]; then echo "codex not found" >&2; exit 127; fi',
+        '"\$CODEX_BIN" $codexArgs < ${_shQuote(promptAbs)} >> ${_shQuote(logAbs)} 2>> ${_shQuote(errAbs)}',
       ].join('\n');
 
       await _ssh.writeRemoteFile(
@@ -534,17 +566,28 @@ class SessionController extends GetxController {
       );
 
       final startBody = [
-        'if command -v tmux >/dev/null 2>&1; then',
-        '  tmux new-session -d -s ${_shQuote(tmuxName)} sh ${_shQuote(runAbs)}',
-        '  echo CODEX_REMOTE_JOB=tmux:$tmuxName',
+        'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
+        'set -e',
+        'TMUX_BIN="\$(command -v tmux 2>/dev/null || true)"',
+        'if [ -z "\$TMUX_BIN" ]; then',
+        '  for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do',
+        '    if [ -x "\$p" ]; then TMUX_BIN="\$p"; break; fi',
+        '  done',
+        'fi',
+        'rm -f ${_shQuote(jobAbs)} >/dev/null 2>&1 || true',
+        'if [ -n "\$TMUX_BIN" ]; then',
+        '  "\$TMUX_BIN" new-session -d -s ${_shQuote(tmuxName)} sh ${_shQuote(runAbs)}',
+        '  echo "tmux:$tmuxName" > ${_shQuote(jobAbs)}',
+        '  printf %s\\\\n "CODEX_REMOTE_JOB=tmux:$tmuxName"',
         'else',
         '  nohup sh ${_shQuote(runAbs)} >/dev/null 2>&1 &',
         '  pid=\$!',
         '  echo "\$pid" > ${_shQuote(pidAbs)}',
-        '  echo CODEX_REMOTE_JOB=pid:\$pid',
+        '  echo "pid:\$pid" > ${_shQuote(jobAbs)}',
+        '  printf %s\\\\n "CODEX_REMOTE_JOB=pid:\$pid"',
         'fi',
       ].join('\n');
-      final startCmd = 'sh -lc ${_shQuote(startBody)}';
+      final startCmd = 'sh -c ${_shQuote(startBody)}';
 
       final launchProc = await _ssh.startCommand(
         host: profile.host,
@@ -583,8 +626,22 @@ class SessionController extends GetxController {
           break;
         }
       }
-      final remoteJobId =
-          jobLine?.substring('CODEX_REMOTE_JOB='.length).trim();
+      var remoteJobId = jobLine?.substring('CODEX_REMOTE_JOB='.length).trim();
+      if (remoteJobId == null || remoteJobId.isEmpty) {
+        try {
+          final readJob = await _ssh.runCommandWithResult(
+            host: profile.host,
+            port: profile.port,
+            username: profile.username,
+            privateKeyPem: pem,
+            password: _sshPassword,
+            command:
+                'sh -c ${_shQuote('if [ -f ${_shQuote(jobAbs)} ]; then cat ${_shQuote(jobAbs)}; fi')}',
+          );
+          final fromFile = readJob.stdout.trim();
+          if (fromFile.isNotEmpty) remoteJobId = fromFile;
+        } catch (_) {}
+      }
       if (remoteJobId == null || remoteJobId.isEmpty) {
         throw StateError('Remote launch did not return a job id.');
       }
@@ -663,7 +720,7 @@ class SessionController extends GetxController {
 
     final logAbs = _remoteAbsPath(_logRelPath);
     final cmd =
-        'sh -lc ${_shQuote('tail -n $startAtLines -F ${_shQuote(logAbs)}')}';
+        'sh -c ${_shQuote('tail -n $startAtLines -F ${_shQuote(logAbs)}')}';
     final proc = await start(cmd);
     final token = Object();
     _tailToken = token;
@@ -720,7 +777,17 @@ class SessionController extends GetxController {
     String checkCmd;
     if (stored.startsWith('tmux:')) {
       final name = stored.substring('tmux:'.length);
-      checkCmd = 'tmux has-session -t ${_shQuote(name)}';
+      checkCmd = [
+        'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
+        'TMUX_BIN="\$(command -v tmux 2>/dev/null || true)"',
+        'if [ -z "\$TMUX_BIN" ]; then',
+        '  for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do',
+        '    if [ -x "\$p" ]; then TMUX_BIN="\$p"; break; fi',
+        '  done',
+        'fi',
+        '[ -n "\$TMUX_BIN" ] || exit 127',
+        '"\$TMUX_BIN" has-session -t ${_shQuote(name)}',
+      ].join('\n');
     } else if (stored.startsWith('pid:')) {
       final pid = stored.substring('pid:'.length);
       checkCmd = 'kill -0 $pid >/dev/null 2>&1';
@@ -734,10 +801,10 @@ class SessionController extends GetxController {
       username: profile.username,
       privateKeyPem: pem,
       password: _sshPassword,
-      command: 'sh -lc ${_shQuote(checkCmd)}',
+      command: 'sh -c ${_shQuote(checkCmd)}',
     );
 
-    if ((check.exitCode ?? 1) == 0) {
+    if ((check.exitCode ?? 1) == 0 || (check.exitCode ?? 1) == 127) {
       isRunning.value = true;
       _cancelCurrent ??= () {
         _stopRemoteJob().whenComplete(() {
@@ -792,7 +859,17 @@ class SessionController extends GetxController {
     String cmd;
     if (job.startsWith('tmux:')) {
       final name = job.substring('tmux:'.length);
-      cmd = 'tmux kill-session -t ${_shQuote(name)} || true';
+      cmd = [
+        'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
+        'TMUX_BIN="\$(command -v tmux 2>/dev/null || true)"',
+        'if [ -z "\$TMUX_BIN" ]; then',
+        '  for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do',
+        '    if [ -x "\$p" ]; then TMUX_BIN="\$p"; break; fi',
+        '  done',
+        'fi',
+        '[ -n "\$TMUX_BIN" ] || exit 127',
+        '"\$TMUX_BIN" kill-session -t ${_shQuote(name)} >/dev/null 2>&1 || true',
+      ].join('\n');
     } else if (job.startsWith('pid:')) {
       final pid = job.substring('pid:'.length);
       cmd = 'kill $pid >/dev/null 2>&1 || true';
@@ -806,7 +883,7 @@ class SessionController extends GetxController {
       username: profile.username,
       privateKeyPem: pem,
       password: _sshPassword,
-      command: 'sh -lc ${_shQuote(cmd)}',
+      command: 'sh -c ${_shQuote(cmd)}',
     );
 
     await _sessionStore.clearRemoteJobId(
@@ -855,7 +932,17 @@ class SessionController extends GetxController {
       String checkCmd;
       if (stored.startsWith('tmux:')) {
         final name = stored.substring('tmux:'.length);
-        checkCmd = 'tmux has-session -t ${_shQuote(name)}';
+        checkCmd = [
+          'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
+          'TMUX_BIN="\$(command -v tmux 2>/dev/null || true)"',
+          'if [ -z "\$TMUX_BIN" ]; then',
+          '  for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do',
+          '    if [ -x "\$p" ]; then TMUX_BIN="\$p"; break; fi',
+          '  done',
+          'fi',
+          '[ -n "\$TMUX_BIN" ] || exit 127',
+          '"\$TMUX_BIN" has-session -t ${_shQuote(name)}',
+        ].join('\n');
       } else if (stored.startsWith('pid:')) {
         final pid = stored.substring('pid:'.length);
         checkCmd = 'kill -0 $pid >/dev/null 2>&1';
@@ -869,10 +956,10 @@ class SessionController extends GetxController {
         username: profile.username,
         privateKeyPem: pem,
         password: _sshPassword,
-        command: 'sh -lc ${_shQuote(checkCmd)}',
+        command: 'sh -c ${_shQuote(checkCmd)}',
       );
 
-      if ((check.exitCode ?? 1) == 0) {
+      if ((check.exitCode ?? 1) == 0 || (check.exitCode ?? 1) == 127) {
         await _startRemoteLogTailIfNeeded();
       } else {
         await _sessionStore.clearRemoteJobId(
@@ -938,7 +1025,7 @@ class SessionController extends GetxController {
 
       final logAbs = _remoteAbsPath(_logRelPath);
       final cmd =
-          'sh -lc ${_shQuote('if [ -f ${_shQuote(logAbs)} ]; then tail -n $maxLines ${_shQuote(logAbs)}; fi')}';
+          'sh -c ${_shQuote('if [ -f ${_shQuote(logAbs)} ]; then tail -n $maxLines ${_shQuote(logAbs)}; fi')}';
 
       final res = await run(cmd);
 
@@ -1064,7 +1151,7 @@ class SessionController extends GetxController {
 
     final logAbs = _remoteAbsPath(logRelPath);
     final cmd =
-        'sh -lc ${_shQuote('if [ -f ${_shQuote(logAbs)} ]; then tail -n $maxLines ${_shQuote(logAbs)}; fi')}';
+        'sh -c ${_shQuote('if [ -f ${_shQuote(logAbs)} ]; then tail -n $maxLines ${_shQuote(logAbs)}; fi')}';
 
     final res = await run(cmd);
     final lines = const LineSplitter().convert(res.stdout);
@@ -1217,7 +1304,7 @@ class SessionController extends GetxController {
         username: profile.username,
         privateKeyPem: pem,
         password: password,
-        command: 'sh -lc ${_shQuote(findCmd)}',
+        command: 'sh -c ${_shQuote(findCmd)}',
       );
     }
 

@@ -82,7 +82,17 @@ Future<bool> _isRemoteJobRunning({
   final id = job.remoteJobId;
   if (id.startsWith('tmux:')) {
     final name = id.substring('tmux:'.length);
-    checkCmd = 'tmux has-session -t ${_shQuote(name)}';
+    checkCmd = [
+      'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
+      'TMUX_BIN="\$(command -v tmux 2>/dev/null || true)"',
+      'if [ -z "\$TMUX_BIN" ]; then',
+      '  for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do',
+      '    if [ -x "\$p" ]; then TMUX_BIN="\$p"; break; fi',
+      '  done',
+      'fi',
+      '[ -n "\$TMUX_BIN" ] || exit 127',
+      '"\$TMUX_BIN" has-session -t ${_shQuote(name)}',
+    ].join('\n');
   } else if (id.startsWith('pid:')) {
     final pid = id.substring('pid:'.length);
     checkCmd = 'kill -0 $pid >/dev/null 2>&1';
@@ -95,9 +105,10 @@ Future<bool> _isRemoteJobRunning({
     port: job.port,
     username: job.username,
     privateKeyPem: privateKeyPem,
-    command: 'sh -lc ${_shQuote(checkCmd)}',
+    command: 'sh -c ${_shQuote(checkCmd)}',
   );
-  return (res.exitCode ?? 1) == 0;
+  final code = res.exitCode ?? 1;
+  return code == 0 || code == 127;
 }
 
 Future<bool?> _inferTurnSuccessFromRemoteLog({
@@ -110,7 +121,7 @@ Future<bool?> _inferTurnSuccessFromRemoteLog({
     '.codex_remote/sessions/${job.tabId}.log',
   );
   final cmd =
-      'sh -lc ${_shQuote('if [ -f ${_shQuote(logAbs)} ]; then tail -n 400 ${_shQuote(logAbs)}; fi')}';
+      'sh -c ${_shQuote('if [ -f ${_shQuote(logAbs)} ]; then tail -n 400 ${_shQuote(logAbs)}; fi')}';
 
   final res = await ssh.runCommandWithResult(
     host: job.host,
@@ -141,4 +152,3 @@ String _joinPosix(String a, String b) {
 }
 
 String _shQuote(String s) => "'${s.replaceAll("'", "'\\''")}'";
-

@@ -1,3 +1,5 @@
+import 'package:get/get.dart';
+
 class ActiveSessionRef {
   final String targetKey;
   final String projectPath;
@@ -11,12 +13,11 @@ class ActiveSessionRef {
 }
 
 class ActiveSessionService {
-  ActiveSessionRef? _active;
+  final activeRx = Rxn<ActiveSessionRef>();
 
-  ActiveSessionRef? get active => _active;
+  ActiveSessionRef? get active => activeRx.value;
 
   void setActive(ActiveSessionRef? ref) {
-    _active = ref;
+    activeRx.value = ref;
   }
 }
-
