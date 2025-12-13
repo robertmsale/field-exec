@@ -1,7 +1,9 @@
 import 'package:flutter/widgets.dart';
+import 'package:get/get.dart';
 
 class AppLifecycleService with WidgetsBindingObserver {
   AppLifecycleState? _state;
+  final stateRx = Rxn<AppLifecycleState>();
 
   AppLifecycleState? get state => _state;
 
@@ -18,6 +20,6 @@ class AppLifecycleService with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _state = state;
+    stateRx.value = state;
   }
 }
-

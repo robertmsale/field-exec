@@ -50,6 +50,10 @@ class SessionController extends GetxController {
   StreamSubscription<String>? _tailStdoutSub;
   StreamSubscription<String>? _tailStderrSub;
   Future<void> _tailQueue = Future.value();
+  Object? _tailToken;
+  Worker? _lifecycleWorker;
+  final _recentLogLines = <String>[];
+  final _recentLogLineSet = <String>{};
 
   SessionController({
     required this.target,
@@ -79,10 +83,20 @@ class SessionController extends GetxController {
     if (!target.local) {
       _maybeReattachRemote();
     }
+    _lifecycleWorker = ever<AppLifecycleState?>(_lifecycle.stateRx, (state) {
+      if (state == AppLifecycleState.resumed) {
+        _onAppResumed();
+      } else if (state == AppLifecycleState.paused ||
+          state == AppLifecycleState.inactive ||
+          state == AppLifecycleState.detached) {
+        _onAppBackgrounded();
+      }
+    });
   }
 
   @override
   void onClose() {
+    _lifecycleWorker?.dispose();
     _cancelTailOnly();
     chatController.dispose();
     inputController.dispose();
@@ -307,6 +321,7 @@ class SessionController extends GetxController {
   }
 
   void _cancelTailOnly() {
+    _tailToken = null;
     try {
       _tailStdoutSub?.cancel();
     } catch (_) {}
@@ -319,6 +334,47 @@ class SessionController extends GetxController {
     _tailProc = null;
     _tailStdoutSub = null;
     _tailStderrSub = null;
+  }
+
+  void _rememberRecentLogLine(String line) {
+    // Keep a small LRU-ish window of raw JSONL lines to suppress duplicates
+    // when reattaching the tail after sleep/background.
+    if (_recentLogLineSet.contains(line)) return;
+    _recentLogLines.add(line);
+    _recentLogLineSet.add(line);
+    const max = 400;
+    if (_recentLogLines.length > max) {
+      final removed = _recentLogLines.removeAt(0);
+      _recentLogLineSet.remove(removed);
+    }
+  }
+
+  bool _shouldProcessLogLine(String line) {
+    if (_recentLogLineSet.contains(line)) return false;
+    _rememberRecentLogLine(line);
+    return true;
+  }
+
+  void _onAppBackgrounded() {
+    // Avoid holding a long-lived SSH connection open while backgrounded.
+    // The remote job continues in tmux/nohup; we can reattach on resume.
+    if (!target.local) _cancelTailOnly();
+  }
+
+  Future<void> _onAppResumed() async {
+    if (target.local) return;
+    final active = _activeSession.active;
+    final isActiveView = active != null &&
+        active.targetKey == target.targetKey &&
+        active.projectPath == projectPath &&
+        active.tabId == tabId;
+    if (!isActiveView) return;
+
+    // If we believe the remote job is running but tail died (common after sleep),
+    // re-check liveness and reattach tail with a small backfill.
+    if (!isRunning.value) return;
+    if (_tailProc != null) return;
+    await _refreshRemoteRunningStateAndTail(backfillLines: 200);
   }
 
   Future<void> _runCodexTurn({required String prompt}) async {
@@ -566,7 +622,7 @@ class SessionController extends GetxController {
     }
   }
 
-  Future<void> _startRemoteLogTailIfNeeded() async {
+  Future<void> _startRemoteLogTailIfNeeded({int startAtLines = 0}) async {
     if (_tailProc != null) return;
 
     final profile = target.profile!;
@@ -602,12 +658,16 @@ class SessionController extends GetxController {
     }
 
     final logAbs = _remoteAbsPath(_logRelPath);
-    final cmd = 'sh -lc ${_shQuote('tail -n 0 -F ${_shQuote(logAbs)}')}';
+    final cmd =
+        'sh -lc ${_shQuote('tail -n $startAtLines -F ${_shQuote(logAbs)}')}';
     final proc = await start(cmd);
+    final token = Object();
+    _tailToken = token;
     _tailProc = proc;
 
     _tailStdoutSub = proc.stdoutLines.listen((line) {
       if (line.trim().isEmpty) return;
+      if (!_shouldProcessLogLine(line)) return;
       _tailQueue = _tailQueue.then((_) async {
         try {
           final decoded = jsonDecode(line);
@@ -626,11 +686,82 @@ class SessionController extends GetxController {
     });
 
     proc.done.then((_) {
+      // If this tail was cancelled/replaced intentionally, suppress noise.
+      if (_tailToken != token) return;
       if (!isClosed) {
         _insertEvent(type: 'tail_closed', text: 'Log tail stopped.');
       }
       _cancelTailOnly();
     });
+  }
+
+  Future<void> _refreshRemoteRunningStateAndTail({required int backfillLines}) async {
+    final stored = _remoteJobId ??
+        await _sessionStore.loadRemoteJobId(
+          targetKey: target.targetKey,
+          projectPath: projectPath,
+          tabId: tabId,
+        );
+    _remoteJobId = stored;
+    if (stored == null || stored.isEmpty) {
+      isRunning.value = false;
+      _cancelCurrent = null;
+      _cancelTailOnly();
+      return;
+    }
+
+    final profile = target.profile!;
+    final pem = await _storage.read(key: SecureStorageService.sshPrivateKeyPemKey);
+
+    String checkCmd;
+    if (stored.startsWith('tmux:')) {
+      final name = stored.substring('tmux:'.length);
+      checkCmd = 'tmux has-session -t ${_shQuote(name)}';
+    } else if (stored.startsWith('pid:')) {
+      final pid = stored.substring('pid:'.length);
+      checkCmd = 'kill -0 $pid >/dev/null 2>&1';
+    } else {
+      checkCmd = 'false';
+    }
+
+    final check = await _ssh.runCommandWithResult(
+      host: profile.host,
+      port: profile.port,
+      username: profile.username,
+      privateKeyPem: pem,
+      password: _sshPassword,
+      command: 'sh -lc ${_shQuote(checkCmd)}',
+    );
+
+    if ((check.exitCode ?? 1) == 0) {
+      isRunning.value = true;
+      _cancelCurrent ??= () {
+        _stopRemoteJob().whenComplete(() {
+          _cancelTailOnly();
+          _cancelCurrent = null;
+          isRunning.value = false;
+        });
+      };
+      await _startRemoteLogTailIfNeeded(startAtLines: backfillLines);
+      return;
+    }
+
+    await _sessionStore.clearRemoteJobId(
+      targetKey: target.targetKey,
+      projectPath: projectPath,
+      tabId: tabId,
+    );
+    try {
+      await _remoteJobs.remove(
+        targetKey: target.targetKey,
+        projectPath: projectPath,
+        tabId: tabId,
+      );
+    } catch (_) {}
+    _remoteJobId = null;
+    isRunning.value = false;
+    _cancelCurrent = null;
+    _cancelTailOnly();
   }
 
   Future<void> _stopRemoteJobBestEffort() async {
@@ -702,6 +833,17 @@ class SessionController extends GetxController {
 
       if (stored == null || stored.isEmpty) return;
 
+      // Optimistically mark as running right away so we don't accidentally start
+      // a new turn and kill the existing remote job before we finish checking.
+      isRunning.value = true;
+      _cancelCurrent = () {
+        _stopRemoteJob().whenComplete(() {
+          _cancelTailOnly();
+          _cancelCurrent = null;
+          isRunning.value = false;
+        });
+      };
+
       final profile = target.profile!;
       final pem =
           await _storage.read(key: SecureStorageService.sshPrivateKeyPemKey);
@@ -727,14 +869,6 @@ class SessionController extends GetxController {
       );
 
       if ((check.exitCode ?? 1) == 0) {
-        isRunning.value = true;
-        _cancelCurrent = () {
-          _stopRemoteJob().whenComplete(() {
-            _cancelTailOnly();
-            _cancelCurrent = null;
-            isRunning.value = false;
-          });
-        };
         await _startRemoteLogTailIfNeeded();
       } else {
         await _sessionStore.clearRemoteJobId(
@@ -750,9 +884,16 @@ class SessionController extends GetxController {
           );
         } catch (_) {}
         _remoteJobId = null;
+        _cancelCurrent = null;
+        isRunning.value = false;
       }
     } catch (_) {
-      // Best-effort.
+      // Best-effort. Keep the optimistic running state; starting a new turn
+      // could otherwise kill a still-running remote job.
+      await _insertEvent(
+        type: 'reattach_failed',
+        text: 'Failed to reattach/check running state. Verify SSH access.',
+      );
     }
   }
 

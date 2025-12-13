@@ -3,7 +3,6 @@ import 'package:get/get.dart';
 
 import '../../models/project_tab.dart';
 import '../session/codex_chat_view.dart';
-import '../session/session_controller.dart';
 import '../../services/conversation_store.dart';
 import '../../services/active_session_service.dart';
 import '../../models/conversation.dart';
@@ -80,10 +79,6 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
     _tabs?.dispose();
     // Leaving this project view.
     _active.setActive(null);
-    // Disposes tab SessionControllers.
-    for (final t in controller.tabs) {
-      Get.delete<SessionController>(tag: t.id, force: true);
-    }
     Get.delete<ProjectSessionsController>(force: true);
     super.dispose();
   }
