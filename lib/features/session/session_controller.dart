@@ -97,6 +97,7 @@ class SessionController extends SessionControllerBase {
   static const _system = 'system';
   static const _clientUserMessageType = 'client.user_message';
   static const _clientGitCommitType = 'client.git_commit';
+  static const _serverGitCommitType = 'server.git_commit';
   static const _maxImageBytes = 10 * 1024 * 1024;
 
   @override
@@ -1250,6 +1251,8 @@ class SessionController extends SessionControllerBase {
       final runBody = [
         'set -e',
         'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
+        'PROJECT=${_shQuote(projectPath)}',
+        'cd "\$PROJECT" 2>/dev/null || { echo "Failed to cd into \$PROJECT" >&2; exit 2; }',
         'LOG=${_shQuote(logAbs)}',
         'ERR=${_shQuote(errAbs)}',
         'exec >> "\$LOG" 2>> "\$ERR"',
@@ -1292,6 +1295,52 @@ class SessionController extends SessionControllerBase {
         // can get stuck "waiting" forever. Force a final newline so the client
         // receives the last line promptly.
         'printf "\\\\n"',
+        '',
+        '# Server-side auto-commit (avoids multi-client races).',
+        'commit_message=""',
+        'if [ -n "\$JQ_BIN" ]; then',
+        '  commit_message="\$(tail -n 2000 "\$LOG" 2>/dev/null | "\$JQ_BIN" -r \'select(.type=="item.completed" and .item.type=="agent_message") | (.item.text | fromjson | (.commit_message // ""))\' 2>/dev/null | tail -n 1 | tr -d \'\\r\')"',
+        'fi',
+        'if [ -z "\$commit_message" ]; then',
+        '  commit_message="\$(tail -n 2000 "\$LOG" 2>/dev/null | sed -n \'s/.*"commit_message"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' | tail -n 1)"',
+        'fi',
+        'commit_message="\$(printf %s "\$commit_message" | tr \'\\n\\t\' \'  \' | tr -s \' \' | sed \'s/^ //; s/ \$//\')"',
+        'if [ -z "\$commit_message" ]; then',
+        '  printf %s\\\\n \'{"type":"$_serverGitCommitType","status":"skipped","reason":"empty_commit_message"}\'',
+        '  exit 0',
+        'fi',
+        'commit_message_b64="\$(printf %s "\$commit_message" | base64 | tr -d \'\\n\')"',
+        'printf %s\\\\n \'{"type":"$_serverGitCommitType","status":"started","commit_message_b64":"\'"\$commit_message_b64"\'"}\'',
+        '',
+        'if ! command -v git >/dev/null 2>&1; then',
+        '  printf %s\\\\n \'{"type":"$_serverGitCommitType","status":"failed","reason":"git_not_found","commit_message_b64":"\'"\$commit_message_b64"\'"}\'',
+        '  exit 0',
+        'fi',
+        'if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then',
+        '  printf %s\\\\n \'{"type":"$_serverGitCommitType","status":"failed","reason":"not_a_git_repo","commit_message_b64":"\'"\$commit_message_b64"\'"}\'',
+        '  exit 0',
+        'fi',
+        '',
+        '# Ensure .field_exec/ is not auto-committed.',
+        'exclude_path="\$(git rev-parse --git-path info/exclude 2>/dev/null || true)"',
+        'if [ -n "\$exclude_path" ]; then',
+        '  mkdir -p "\$(dirname "\$exclude_path")" >/dev/null 2>&1 || true',
+        '  touch "\$exclude_path" >/dev/null 2>&1 || true',
+        '  grep -qxF ${_shQuote('.field_exec/')} "\$exclude_path" 2>/dev/null || printf %s\\\\n ${_shQuote('.field_exec/')} >> "\$exclude_path" || true',
+        'fi',
+        '',
+        'changes="\$(git status --porcelain 2>/dev/null || true)"',
+        'if [ -z "\$changes" ]; then',
+        '  printf %s\\\\n \'{"type":"$_serverGitCommitType","status":"skipped","reason":"no_changes","commit_message_b64":"\'"\$commit_message_b64"\'"}\'',
+        '  exit 0',
+        'fi',
+        '',
+        'git add -A >/dev/null 2>&1 || true',
+        'if git commit -m "\$commit_message" >/dev/null 2>&1; then',
+        '  printf %s\\\\n \'{"type":"$_serverGitCommitType","status":"completed","commit_message_b64":"\'"\$commit_message_b64"\'"}\'',
+        'else',
+        '  printf %s\\\\n \'{"type":"$_serverGitCommitType","status":"failed","reason":"git_commit_failed","commit_message_b64":"\'"\$commit_message_b64"\'"}\'',
+        'fi',
       ].join('\n');
 
       final startBody = [
@@ -2168,10 +2217,7 @@ class SessionController extends SessionControllerBase {
   }) async {
     if (isRunning.value) return;
     if (_autoCommitCatchUpInProgress) return;
-    if (!target.local) {
-      final job = remoteJobId.value;
-      if (job != null && job.isNotEmpty) return;
-    }
+    if (!target.local) return;
 
     String? lastCommitMessage;
     String? lastSourceItemId;
@@ -2544,6 +2590,13 @@ class SessionController extends SessionControllerBase {
     // stream to avoid duplicates. Rehydration renders them from the log instead.
     if (type == _clientUserMessageType) return;
     if (type == _clientGitCommitType) return;
+    if (type == _serverGitCommitType) {
+      final out = await _materializeCodexJsonEvent(event, replay: false);
+      if (out.isNotEmpty) {
+        await chatController.insertAllMessages(out, animated: true);
+      }
+      return;
+    }
 
     if (type == 'thread.started') {
       final id = event['thread_id'] as String?;
@@ -2772,7 +2825,7 @@ class SessionController extends SessionControllerBase {
           ),
         );
 
-        if (!replay && commitMessage.isNotEmpty) {
+        if (!replay && commitMessage.isNotEmpty && target.local) {
           await _maybeAutoCommit(commitMessage, sourceItemId: sourceItemId);
         }
 
@@ -2855,6 +2908,33 @@ class SessionController extends SessionControllerBase {
         _eventMessage(
           type: 'git_commit',
           text: summary.isEmpty ? 'Auto-commit event.' : summary,
+        ),
+      ];
+    }
+
+    if (type == _serverGitCommitType) {
+      final status = event['status']?.toString().trim() ?? '';
+      final reason = event['reason']?.toString().trim() ?? '';
+      final b64 = event['commit_message_b64']?.toString().trim() ?? '';
+
+      String msg = '';
+      if (b64.isNotEmpty) {
+        try {
+          msg = utf8.decode(base64.decode(b64)).trim();
+        } catch (_) {}
+      }
+
+      final summary = [
+        'server',
+        if (status.isNotEmpty) status,
+        if (reason.isNotEmpty) reason,
+        if (msg.isNotEmpty) msg,
+      ].join(' • ');
+
+      return [
+        _eventMessage(
+          type: 'git_commit',
+          text: summary.isEmpty ? 'Server auto-commit event.' : summary,
         ),
       ];
     }
