@@ -349,7 +349,11 @@ class SessionController extends SessionControllerBase {
     }
     final bytes = await file.readAsBytes();
     if (bytes.isEmpty) throw StateError('Image was empty.');
-    return Uint8List.fromList(bytes);
+    final out = Uint8List.fromList(bytes);
+    if (!_looksLikeImage(out)) {
+      throw StateError('File is not a supported image type.');
+    }
+    return out;
   }
 
   Future<Uint8List> _readRemoteImageBytes(String absPath) async {
@@ -411,7 +415,72 @@ class SessionController extends SessionControllerBase {
     if (b64.isEmpty) throw StateError('Remote returned empty image payload.');
     final decoded = base64.decode(b64);
     if (decoded.isEmpty) throw StateError('Decoded image was empty.');
-    return Uint8List.fromList(decoded);
+    final out = Uint8List.fromList(decoded);
+    if (!_looksLikeImage(out)) {
+      throw StateError('File is not a supported image type.');
+    }
+    return out;
+  }
+
+  bool _looksLikeImage(Uint8List bytes) {
+    if (bytes.length >= 8) {
+      // PNG
+      if (bytes[0] == 0x89 &&
+          bytes[1] == 0x50 &&
+          bytes[2] == 0x4E &&
+          bytes[3] == 0x47 &&
+          bytes[4] == 0x0D &&
+          bytes[5] == 0x0A &&
+          bytes[6] == 0x1A &&
+          bytes[7] == 0x0A) {
+        return true;
+      }
+    }
+    if (bytes.length >= 3) {
+      // JPEG
+      if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) {
+        return true;
+      }
+    }
+    if (bytes.length >= 6) {
+      // GIF
+      final g0 = bytes[0],
+          g1 = bytes[1],
+          g2 = bytes[2],
+          g3 = bytes[3],
+          g4 = bytes[4],
+          g5 = bytes[5];
+      if (g0 == 0x47 && g1 == 0x49 && g2 == 0x46 && g3 == 0x38) {
+        if ((g4 == 0x37 || g4 == 0x39) && g5 == 0x61) return true;
+      }
+    }
+    if (bytes.length >= 12) {
+      // WEBP: RIFF....WEBP
+      if (bytes[0] == 0x52 &&
+          bytes[1] == 0x49 &&
+          bytes[2] == 0x46 &&
+          bytes[3] == 0x46 &&
+          bytes[8] == 0x57 &&
+          bytes[9] == 0x45 &&
+          bytes[10] == 0x42 &&
+          bytes[11] == 0x50) {
+        return true;
+      }
+    }
+    if (bytes.length >= 2) {
+      // BMP
+      if (bytes[0] == 0x42 && bytes[1] == 0x4D) return true;
+    }
+    if (bytes.length >= 4) {
+      // ICO
+      if (bytes[0] == 0x00 &&
+          bytes[1] == 0x00 &&
+          bytes[2] == 0x01 &&
+          bytes[3] == 0x00) {
+        return true;
+      }
+    }
+    return false;
   }
 
   Future<void> _updateImageMessage(

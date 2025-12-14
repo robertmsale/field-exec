@@ -1,9 +1,8 @@
 import 'dart:convert';
-import 'dart:typed_data';
-import 'dart:io';
 
 import 'package:design_system/design_system.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:get/get.dart';
 import 'package:uuid/uuid.dart';
@@ -422,6 +421,7 @@ class MockSessionController extends SessionControllerBase {
   final bool seed;
   final _uuid = const Uuid();
   var _seeded = false;
+  static const _mockScreenshotAssetKey = '../../assets/screenshot.png';
 
   @override
   final chatController = InMemoryChatController();
@@ -611,30 +611,26 @@ class MockSessionController extends SessionControllerBase {
           id: _uuid.v4(),
           authorId: _codex,
           createdAt: t6.add(const Duration(seconds: 1, milliseconds: 200)),
-          metadata: const {
+          metadata: {
             'kind': 'codex_image_grid',
             'images': [
               {
-                'path':
-                    'macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_512.png',
+                'path': _mockScreenshotAssetKey,
                 'caption': 'Golden diff A (mock)',
                 'status': 'tap_to_load',
               },
               {
-                'path':
-                    'macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_512.png',
+                'path': _mockScreenshotAssetKey,
                 'caption': 'Golden diff B (mock)',
                 'status': 'tap_to_load',
               },
               {
-                'path':
-                    'macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_512.png',
+                'path': _mockScreenshotAssetKey,
                 'caption': 'Golden diff C (mock)',
                 'status': 'tap_to_load',
               },
               {
-                'path':
-                    'macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_512.png',
+                'path': _mockScreenshotAssetKey,
                 'caption': 'Golden diff D (mock)',
                 'status': 'tap_to_load',
               },
@@ -703,7 +699,7 @@ class MockSessionController extends SessionControllerBase {
     final kind = meta['kind']?.toString();
     if (kind != 'codex_image' && kind != 'codex_image_grid') return;
 
-    final bytes = await _readMockAppIconBytes();
+    final bytes = await _readMockScreenshotBytes();
 
     if (kind == 'codex_image') {
       final next = Map<String, Object?>.from(meta);
@@ -740,13 +736,10 @@ class MockSessionController extends SessionControllerBase {
     await chatController.updateMessage(message, message.copyWith(metadata: next));
   }
 
-  Future<Uint8List> _readMockAppIconBytes() async {
-    const path = 'macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_512.png';
+  Future<Uint8List> _readMockScreenshotBytes() async {
     try {
-      final file = File(path);
-      if (await file.exists()) {
-        return Uint8List.fromList(await file.readAsBytes());
-      }
+      final data = await rootBundle.load(_mockScreenshotAssetKey);
+      return Uint8List.fromList(data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes));
     } catch (_) {}
     final fallback = base64.decode(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO9l9WQAAAAASUVORK5CYII=',

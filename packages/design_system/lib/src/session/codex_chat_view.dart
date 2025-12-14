@@ -428,7 +428,13 @@ class _CodexImageBubble extends StatelessWidget {
                         minScale: 0.5,
                         maxScale: 6,
                         child: Center(
-                          child: Image.memory(bytes, fit: BoxFit.contain),
+                          child: Image.memory(
+                            bytes,
+                            fit: BoxFit.contain,
+                            errorBuilder: (context, error, stack) {
+                              return _imageDecodeError(context);
+                            },
+                          ),
                         ),
                       ),
                     ),
@@ -484,7 +490,13 @@ class _CodexImageBubble extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxHeight: 260),
-          child: Image.memory(bytes, fit: BoxFit.contain),
+          child: Image.memory(
+            bytes,
+            fit: BoxFit.contain,
+            errorBuilder: (context, error, stack) {
+              return _imageDecodeError(context);
+            },
+          ),
         ),
       );
     } else if (hasError) {
@@ -649,7 +661,13 @@ class _CodexImageGridBubble extends StatelessWidget {
                       minScale: 0.5,
                       maxScale: 6,
                       child: Center(
-                        child: Image.memory(bytes, fit: BoxFit.contain),
+                        child: Image.memory(
+                          bytes,
+                          fit: BoxFit.contain,
+                          errorBuilder: (context, error, stack) {
+                            return _imageDecodeError(context);
+                          },
+                        ),
                       ),
                     ),
                   ),
@@ -720,7 +738,13 @@ class _CodexImageGridBubble extends StatelessWidget {
         if (b == null) return const SizedBox.shrink();
         inner = ClipRRect(
           borderRadius: BorderRadius.circular(10),
-          child: Image.memory(b, fit: BoxFit.contain),
+          child: Image.memory(
+            b,
+            fit: BoxFit.contain,
+            errorBuilder: (context, error, stack) {
+              return _imageDecodeError(context);
+            },
+          ),
         );
       } else if (hasError) {
         inner = Container(
@@ -868,6 +892,32 @@ class _CodexImageGridBubble extends StatelessWidget {
       ),
     );
   }
+}
+
+Widget _imageDecodeError(BuildContext context) {
+  final cs = Theme.of(context).colorScheme;
+  return Container(
+    decoration: BoxDecoration(
+      color: cs.errorContainer,
+      borderRadius: BorderRadius.circular(10),
+    ),
+    padding: const EdgeInsets.all(10),
+    child: Row(
+      children: [
+        Icon(Icons.broken_image_outlined, color: cs.onErrorContainer),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            'Invalid image data.',
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: cs.onErrorContainer),
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 class _CodexBubble extends StatelessWidget {
