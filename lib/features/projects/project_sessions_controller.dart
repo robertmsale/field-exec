@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:design_system/design_system.dart';
 import 'package:get/get.dart';
 import 'package:uuid/uuid.dart';
@@ -152,7 +153,25 @@ class ProjectSessionsController extends ProjectSessionsControllerBase {
     final idx = tabs.indexWhere((t) => t.id == tab.id);
     if (idx == -1) return;
 
+    // If this is the last remaining tab, don't remove it. Just clear the chat
+    // and thread so it behaves like starting a brand new session.
+    if (tabs.length <= 1) {
+      final session = sessionForTab(tab);
+      await session.resetSession();
+      return;
+    }
+
+    // Move selection away from the closing tab first to avoid transient builds
+    // that still reference the soon-to-be-disposed SessionController.
+    final wasActive = activeIndex.value == idx;
+    if (wasActive) {
+      activeIndex.value = (idx - 1).clamp(0, tabs.length - 1);
+    } else if (activeIndex.value > idx) {
+      activeIndex.value = (activeIndex.value - 1).clamp(0, tabs.length - 2);
+    }
+
     tabs.removeAt(idx);
+
     await _store.clearThreadId(
       targetKey: args.target.targetKey,
       projectPath: args.project.path,
@@ -163,15 +182,14 @@ class ProjectSessionsController extends ProjectSessionsControllerBase {
       projectPath: args.project.path,
       tabId: tab.id,
     );
-    Get.delete<SessionController>(tag: _sessionTag(tab.id), force: true);
 
-    if (tabs.isEmpty) {
-      await addTab();
-      return;
-    }
-    if (activeIndex.value >= tabs.length) {
-      activeIndex.value = tabs.length - 1;
-    }
+    // Dispose the SessionController after the UI has had a chance to rebuild
+    // without this tab to avoid "TextEditingController used after dispose".
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      try {
+        Get.delete<SessionController>(tag: _sessionTag(tab.id), force: true);
+      } catch (_) {}
+    });
 
     await _tabsStore.saveTabs(
       targetKey: args.target.targetKey,

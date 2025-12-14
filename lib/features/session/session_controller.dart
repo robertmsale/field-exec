@@ -240,6 +240,41 @@ class SessionController extends SessionControllerBase {
   Future<void> sendQuickReply(String value) => sendText(value);
 
   @override
+  Future<void> resetSession() async {
+    // Stop any in-progress activity and clear session state, leaving the tab in
+    // a "fresh" state without deleting the controller.
+    stop();
+    try {
+      await resetThread();
+    } catch (_) {}
+
+    try {
+      await _sessionStore.clearRemoteJobId(
+        targetKey: target.targetKey,
+        projectPath: projectPath,
+        tabId: tabId,
+      );
+    } catch (_) {}
+    try {
+      if (!target.local) {
+        await _remoteJobs.remove(
+          targetKey: target.targetKey,
+          projectPath: projectPath,
+          tabId: tabId,
+        );
+      }
+    } catch (_) {}
+
+    _remoteJobId = null;
+    remoteJobId.value = null;
+    isRunning.value = false;
+    thinkingPreview.value = null;
+    _cancelCurrent = null;
+    _cancelTailOnly();
+    _cancelLocalTailOnly();
+  }
+
+  @override
   Future<void> loadImageAttachment(CustomMessage message, {int? index}) async {
     final meta = message.metadata ?? const {};
     final kind = meta['kind']?.toString();

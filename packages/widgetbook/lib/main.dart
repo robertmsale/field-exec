@@ -769,6 +769,15 @@ class MockSessionController extends SessionControllerBase {
   Future<void> reattachIfNeeded({int backfillLines = 200}) async {}
 
   @override
+  Future<void> resetSession() async {
+    threadId.value = null;
+    remoteJobId.value = null;
+    thinkingPreview.value = null;
+    isRunning.value = false;
+    await chatController.setMessages(const [], animated: false);
+  }
+
+  @override
   void stop() {
     isRunning.value = false;
   }

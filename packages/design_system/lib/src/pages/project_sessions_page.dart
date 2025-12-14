@@ -21,6 +21,7 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
   late final ProjectSessionsControllerBase controller;
   TabController? _tabs;
   Worker? _tabsWorker;
+  Worker? _activeWorker;
 
   @override
   void initState() {
@@ -29,13 +30,38 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
 
     _recreateTabController();
     _tabsWorker = ever<List<ProjectTab>>(controller.tabs, (_) {
-      _recreateTabController();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _recreateTabController();
+      });
+    });
+    _activeWorker = ever<int>(controller.activeIndex, (idx) {
+      final tabs = _tabs;
+      if (tabs == null) return;
+      final safe = idx.clamp(0, tabs.length - 1);
+      if (safe == tabs.index) return;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final current = _tabs;
+        if (current == null) return;
+        final next = controller.activeIndex.value.clamp(0, current.length - 1);
+        if (next == current.index) return;
+        try {
+          current.animateTo(next);
+        } catch (_) {}
+      });
     });
   }
 
   void _recreateTabController() {
     final length = controller.tabs.length;
-    if (length <= 0) return;
+    if (length <= 0) {
+      final old = _tabs;
+      _tabs = null;
+      old?.dispose();
+      if (mounted) setState(() {});
+      return;
+    }
 
     final nextIndex = controller.activeIndex.value.clamp(0, length - 1);
     final old = _tabs;
@@ -45,12 +71,13 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
       controller.activeIndex.value = _tabs!.index;
     });
     old?.dispose();
-    setState(() {});
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     _tabsWorker?.dispose();
+    _activeWorker?.dispose();
     _tabs?.dispose();
     super.dispose();
   }
@@ -107,6 +134,7 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
           preferredSize: const Size.fromHeight(44),
           child: Obx(() {
             final items = controller.tabs;
+            if (items.isEmpty) return const SizedBox(height: 44);
             return Row(
               children: [
                 Expanded(
@@ -143,6 +171,7 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
       ),
       body: Obx(() {
         final items = controller.tabs;
+        if (items.isEmpty) return const SizedBox.shrink();
         return TabBarView(
           controller: tabs,
           children: [
