@@ -41,6 +41,12 @@ abstract class ProjectSessionsControllerBase extends GetxController {
   /// Navigates to another project (typically from [loadSwitchableProjects]).
   Future<void> switchToProject(Project project);
 
+  /// Loads the project-scoped developer instructions from `.field_exec/`.
+  Future<String> loadDeveloperInstructions();
+
+  /// Saves the project-scoped developer instructions to `.field_exec/`.
+  Future<void> saveDeveloperInstructions(String instructions);
+
   String runCommandHint();
   Future<RunCommandResult> runShellCommand(String command);
 }

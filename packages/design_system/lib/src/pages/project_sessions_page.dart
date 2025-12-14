@@ -13,7 +13,14 @@ import '../git/git_tools_sheet.dart';
 import 'project_sessions_help_sheet.dart';
 import 'run_command_sheet.dart';
 
-enum _ProjectMenuAction { help, runCommand, resumeConversation, git, switchTo }
+enum _ProjectMenuAction {
+  help,
+  runCommand,
+  resumeConversation,
+  git,
+  developerInstructions,
+  switchTo,
+}
 
 class ProjectSessionsPage extends StatefulWidget {
   const ProjectSessionsPage({super.key});
@@ -102,6 +109,15 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
     await controller.switchToProject(picked);
   }
 
+  Future<void> _editDeveloperInstructions() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => _DeveloperInstructionsSheet(controller: controller),
+    );
+  }
+
   Future<void> _handleMenu(_ProjectMenuAction action) async {
     switch (action) {
       case _ProjectMenuAction.help:
@@ -115,6 +131,9 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
         return;
       case _ProjectMenuAction.git:
         await _showGit();
+        return;
+      case _ProjectMenuAction.developerInstructions:
+        await _editDeveloperInstructions();
         return;
       case _ProjectMenuAction.switchTo:
         await _switchToProjectInGroup();
@@ -274,6 +293,14 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
                   title: Text('Switch to…'),
                 ),
               ),
+              PopupMenuItem<_ProjectMenuAction>(
+                value: _ProjectMenuAction.developerInstructions,
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(Icons.tune, size: 18),
+                  title: Text('Developer instructions…'),
+                ),
+              ),
               PopupMenuDivider(),
               PopupMenuItem<_ProjectMenuAction>(
                 value: _ProjectMenuAction.git,
@@ -417,5 +444,140 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
 
     if (picked == null) return;
     await controller.openConversation(picked);
+  }
+}
+
+class _DeveloperInstructionsSheet extends StatefulWidget {
+  const _DeveloperInstructionsSheet({required this.controller});
+
+  final ProjectSessionsControllerBase controller;
+
+  @override
+  State<_DeveloperInstructionsSheet> createState() =>
+      _DeveloperInstructionsSheetState();
+}
+
+class _DeveloperInstructionsSheetState
+    extends State<_DeveloperInstructionsSheet> {
+  final _text = TextEditingController();
+  bool _loading = true;
+  bool _saving = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final s = await widget.controller.loadDeveloperInstructions();
+      _text.text = s;
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      await widget.controller.saveDeveloperInstructions(_text.text);
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Saved developer instructions.')),
+      );
+    } catch (e) {
+      setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(bottom: bottomInset),
+        child: SizedBox(
+          height: MediaQuery.of(context).size.height * 0.9,
+          child: Column(
+            children: [
+              ListTile(
+                title: const Text('Developer instructions'),
+                subtitle: Text(
+                  '${widget.controller.args.project.name} • .field_exec/developer_instructions.txt',
+                ),
+                trailing: Wrap(
+                  spacing: 4,
+                  children: [
+                    IconButton(
+                      tooltip: 'Reload',
+                      onPressed: _loading || _saving ? null : _load,
+                      icon: const Icon(Icons.refresh),
+                    ),
+                    FilledButton(
+                      onPressed: _loading || _saving ? null : _save,
+                      child: _saving
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Save'),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: _loading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _error != null
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Text(_error!, textAlign: TextAlign.center),
+                        ),
+                      )
+                    : Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: TextField(
+                          controller: _text,
+                          maxLines: null,
+                          expands: true,
+                          keyboardType: TextInputType.multiline,
+                          textInputAction: TextInputAction.newline,
+                          decoration: const InputDecoration(
+                            border: OutlineInputBorder(),
+                            hintText:
+                                'These instructions are appended to the developer prompt for every Codex run in this project.',
+                          ),
+                        ),
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

@@ -614,6 +614,7 @@ class MockProjectSessionsController extends ProjectSessionsControllerBase {
 
   final _uuid = const Uuid();
   final _sessionsByTabId = <String, MockSessionController>{};
+  String _developerInstructions = '';
 
   @override
   void onInit() {
@@ -725,6 +726,16 @@ class MockProjectSessionsController extends ProjectSessionsControllerBase {
       DesignRoutes.project,
       arguments: ProjectArgs(target: args.target, project: project),
     );
+  }
+
+  @override
+  Future<String> loadDeveloperInstructions() async {
+    return _developerInstructions;
+  }
+
+  @override
+  Future<void> saveDeveloperInstructions(String instructions) async {
+    _developerInstructions = instructions;
   }
 
   @override

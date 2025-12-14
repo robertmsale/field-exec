@@ -53,6 +53,8 @@ class SessionController extends SessionControllerBase {
   String get _schemaRelPath => '$_fieldExecDir/output-schema.json';
   String get _sessionsDirRelPath => '$_fieldExecDir/sessions';
   String get _tmpDirRelPath => '$_fieldExecDir/tmp';
+  String get _devInstructionsRelPath =>
+      '$_fieldExecDir/developer_instructions.txt';
   String get _logRelPath => '$_sessionsDirRelPath/$tabId.log';
   String get _stderrLogRelPath => '$_sessionsDirRelPath/$tabId.stderr.log';
   String get _jobRelPath => '$_sessionsDirRelPath/$tabId.job';
@@ -781,6 +783,9 @@ class SessionController extends SessionControllerBase {
     ).create(recursive: true);
     await File(_joinPosix(projectPath, _jobRelPath)).create(recursive: true);
     await File(_joinPosix(projectPath, _pidRelPath)).create(recursive: true);
+    await File(
+      _joinPosix(projectPath, _devInstructionsRelPath),
+    ).create(recursive: true);
   }
 
   Future<void> _ensureFieldExecDirsRemote() async {
@@ -824,6 +829,7 @@ class SessionController extends SessionControllerBase {
     final errAbs = _remoteAbsPath(_stderrLogRelPath);
     final jobAbs = _remoteAbsPath(_jobRelPath);
     final pidAbs = _remoteAbsPath(_pidRelPath);
+    final devAbs = _remoteAbsPath(_devInstructionsRelPath);
 
     final ignoreLine = _shQuote('**/.field_exec/');
     final cd = _shQuote(projectPath);
@@ -840,9 +846,34 @@ class SessionController extends SessionControllerBase {
       '    grep -qxF $ignoreLine "\$exclude_path" 2>/dev/null || printf %s\\\\n $ignoreLine >> "\$exclude_path" || true',
       '  fi',
       'fi',
-      'mkdir -p ${_shQuote(sessionsAbs)} ${_shQuote(tmpAbs)} && touch ${_shQuote(logAbs)} ${_shQuote(errAbs)} ${_shQuote(jobAbs)} ${_shQuote(pidAbs)}',
+      'mkdir -p ${_shQuote(sessionsAbs)} ${_shQuote(tmpAbs)} && touch ${_shQuote(logAbs)} ${_shQuote(errAbs)} ${_shQuote(jobAbs)} ${_shQuote(pidAbs)} ${_shQuote(devAbs)}',
     ].join('\n');
     await run(_wrapWithShell(profile, cmd));
+  }
+
+  static String _sanitizeDevInstructions(String s) {
+    // Avoid delimiter collisions with TOML multiline literal strings (''' ... ''').
+    return s.replaceAll("'''", "''’").replaceAll('\r', '');
+  }
+
+  Future<String> _localDeveloperInstructionsCombined() async {
+    final file = File(_joinPosix(projectPath, _devInstructionsRelPath));
+    await file.parent.create(recursive: true);
+    if (!await file.exists()) {
+      await file.writeAsString('', flush: true);
+    }
+    final raw = await file.readAsString();
+    final projectText = _sanitizeDevInstructions(raw).trimRight();
+    if (projectText.isEmpty) {
+      return CodexCommandBuilder.defaultDeveloperInstructions;
+    }
+    return [
+      CodexCommandBuilder.defaultDeveloperInstructions.trimRight(),
+      '',
+      '# Project developer instructions (.field_exec/developer_instructions.txt)',
+      projectText,
+      '',
+    ].join('\n');
   }
 
   void _cancelTailOnly() {
@@ -1030,6 +1061,7 @@ class SessionController extends SessionControllerBase {
       try {
         await _ensureFieldExecDirsLocal();
         await _ensureSchema(schemaContents: CodexOutputSchema.encode());
+        final combinedDev = await _localDeveloperInstructionsCombined();
 
         final cmd = CodexCommandBuilder.build(
           prompt: prompt,
@@ -1039,7 +1071,7 @@ class SessionController extends SessionControllerBase {
           cd: null,
           configOverrides: {
             'developer_instructions': CodexCommandBuilder.tomlString(
-              CodexCommandBuilder.defaultDeveloperInstructions,
+              combinedDev,
             ),
           },
         );
@@ -1238,11 +1270,7 @@ class SessionController extends SessionControllerBase {
         resumeThreadId: threadId.value,
         jsonl: true,
         cd: projectPath,
-        configOverrides: {
-          'developer_instructions': CodexCommandBuilder.tomlString(
-            CodexCommandBuilder.defaultDeveloperInstructions,
-          ),
-        },
+        configOverrides: const {},
       );
 
       await _insertEvent(
@@ -1265,7 +1293,12 @@ class SessionController extends SessionControllerBase {
       // so the remote job can read it back as stdin without creating temp files.
       await _appendRemoteUserMessageToLog(prompt: prompt, logAbsPath: logAbs);
 
-      final codexArgs = CodexCommandBuilder.shellString(cmd.args);
+      final codexArgsTail = CodexCommandBuilder.shellString(
+        cmd.args.sublist(1),
+      );
+      final baseDevB64 = base64.encode(
+        utf8.encode(CodexCommandBuilder.defaultDeveloperInstructions),
+      );
       final runBody = [
         'set -e',
         'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
@@ -1274,6 +1307,8 @@ class SessionController extends SessionControllerBase {
         'LOG=${_shQuote(logAbs)}',
         'ERR=${_shQuote(errAbs)}',
         'exec >> "\$LOG" 2>> "\$ERR"',
+        'mkdir -p ${_shQuote(_fieldExecDir)} >/dev/null 2>&1 || true',
+        'touch ${_shQuote(_devInstructionsRelPath)} >/dev/null 2>&1 || true',
         'CODEX_BIN="\$(command -v codex 2>/dev/null || true)"',
         'if [ -z "\$CODEX_BIN" ]; then',
         '  for p in /opt/homebrew/bin/codex /usr/local/bin/codex "\$HOME/.local/bin/codex" /usr/bin/codex; do',
@@ -1309,6 +1344,18 @@ class SessionController extends SessionControllerBase {
         '  exit 2',
         'fi',
         '',
+        '# Project-scoped developer instructions.',
+        'BASE_DEV_B64=${_shQuote(baseDevB64)}',
+        r'BASE_DEV="$(printf %s "$BASE_DEV_B64" | base64 -D 2>/dev/null || printf %s "$BASE_DEV_B64" | base64 -d 2>/dev/null || true)"',
+        r'USER_DEV="$(cat ".field_exec/developer_instructions.txt" 2>/dev/null || true)"',
+        "APOS=\"'\"",
+        r'DELIM="${APOS}${APOS}${APOS}"',
+        r'REPL="${APOS}${APOS}’"',
+        r'BASE_DEV="$(printf %s "$BASE_DEV" | tr -d "\r" | sed "s/${DELIM}/${REPL}/g")"',
+        r'USER_DEV="$(printf %s "$USER_DEV" | tr -d "\r" | sed "s/${DELIM}/${REPL}/g")"',
+        r'DEV_COMBINED="$(printf "%s\n\n# Project developer instructions (.field_exec/developer_instructions.txt)\n%s\n" "$BASE_DEV" "$USER_DEV")"',
+        r'DEV_TOML="$(printf "%s\n%s\n%s\n" "$DELIM" "$DEV_COMBINED" "$DELIM")"',
+        '',
         '# Bootstrap .gitignore for .field_exec to keep agent logs safe.',
         'if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then',
         '  before_status="\$(git status --porcelain 2>/dev/null || true)"',
@@ -1330,7 +1377,7 @@ class SessionController extends SessionControllerBase {
         '    fi',
         '  fi',
         'fi',
-        'printf %s\\\\n "\$prompt" | "\$CODEX_BIN" $codexArgs',
+        'printf %s\\\\n "\$prompt" | "\$CODEX_BIN" exec -c "developer_instructions=\$DEV_TOML" $codexArgsTail',
         // If the last JSONL event is missing a trailing newline, tail/line-splitting
         // can get stuck "waiting" forever. Force a final newline so the client
         // receives the last line promptly.

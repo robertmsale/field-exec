@@ -13,6 +13,7 @@ import '../../services/conversation_store.dart';
 import '../../services/field_exec_session_store.dart';
 import '../../services/project_store.dart';
 import '../../services/project_tabs_store.dart';
+import '../../services/secure_storage_service.dart';
 import '../../rinf/rust_ssh_service.dart';
 import '../session/session_controller.dart';
 
@@ -39,6 +40,9 @@ class ProjectSessionsController extends ProjectSessionsControllerBase {
   ConversationStore get _conversations => Get.find<ConversationStore>();
   ActiveSessionService get _active => Get.find<ActiveSessionService>();
   ProjectStore get _projects => Get.find<ProjectStore>();
+
+  static const _devInstructionsRelPath =
+      '.field_exec/developer_instructions.txt';
 
   @override
   void onInit() {
@@ -557,6 +561,83 @@ done
     Get.offNamed(
       DesignRoutes.project,
       arguments: ProjectArgs(target: args.target, project: project),
+    );
+  }
+
+  static String _sanitizeDevInstructions(String s) {
+    // We use TOML multiline literal strings in some places (''' ... ''') so
+    // avoid delimiter collisions.
+    return s.replaceAll("'''", "''’").replaceAll('\r', '');
+  }
+
+  @override
+  Future<String> loadDeveloperInstructions() async {
+    if (args.target.local) {
+      if (!Platform.isMacOS) {
+        throw StateError('Local mode is only supported on macOS.');
+      }
+      final dir = Directory('${args.project.path}/.field_exec');
+      await dir.create(recursive: true);
+      final file = File('${args.project.path}/$_devInstructionsRelPath');
+      if (!await file.exists()) {
+        await file.writeAsString('', flush: true);
+      }
+      final text = await file.readAsString();
+      return _sanitizeDevInstructions(text);
+    }
+
+    final res = await runShellCommand(
+      'mkdir -p .field_exec && touch ${_shQuote(_devInstructionsRelPath)} && cat ${_shQuote(_devInstructionsRelPath)}',
+    );
+    if (res.exitCode != 0) {
+      final err = (res.stderr.trim().isEmpty ? res.stdout : res.stderr).trim();
+      throw StateError(
+        err.isEmpty ? 'Failed to load developer instructions.' : err,
+      );
+    }
+    return _sanitizeDevInstructions(res.stdout);
+  }
+
+  @override
+  Future<void> saveDeveloperInstructions(String instructions) async {
+    final text = _sanitizeDevInstructions(instructions);
+    if (args.target.local) {
+      if (!Platform.isMacOS) {
+        throw StateError('Local mode is only supported on macOS.');
+      }
+      final dir = Directory('${args.project.path}/.field_exec');
+      await dir.create(recursive: true);
+      final file = File('${args.project.path}/$_devInstructionsRelPath');
+      await file.writeAsString(text, flush: true);
+      return;
+    }
+
+    final profile = args.target.profile;
+    if (profile == null) {
+      throw StateError('Missing remote connection profile.');
+    }
+
+    final pem = await Get.find<SecureStorageService>().read(
+      key: SecureStorageService.sshPrivateKeyPemKey,
+    );
+
+    await RustSshService.writeRemoteFile(
+      host: profile.host,
+      port: profile.port,
+      username: profile.username,
+      remotePath: '${args.project.path}/$_devInstructionsRelPath',
+      contents: text,
+      privateKeyPemOverride: pem,
+      connectTimeout: const Duration(seconds: 10),
+      commandTimeout: const Duration(seconds: 30),
+      passwordProvider: () async {
+        if (_sshPassword != null && _sshPassword!.trim().isNotEmpty) {
+          return _sshPassword;
+        }
+        final pw = await _promptForPassword();
+        if (pw != null && pw.trim().isNotEmpty) _sshPassword = pw;
+        return pw;
+      },
     );
   }
 
