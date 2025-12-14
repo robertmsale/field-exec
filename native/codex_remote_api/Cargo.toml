@@ -1,0 +1,14 @@
+[package]
+name = "codex_remote_api"
+version = "0.1.0"
+edition = "2024"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+wildcard_imports = "deny"
+
+[dependencies]
+rinf = "8.8.1"
+serde = { version = "1.0.219", features = ["derive"] }
+

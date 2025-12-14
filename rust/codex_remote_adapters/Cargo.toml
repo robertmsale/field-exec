@@ -1,0 +1,14 @@
+[package]
+name = "codex_remote_adapters"
+version = "0.1.0"
+edition = "2024"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+wildcard_imports = "deny"
+
+[dependencies]
+async-ssh2-tokio = "0.12.1"
+tokio = { version = "1.45.0", features = ["net", "rt", "sync", "time"] }
+

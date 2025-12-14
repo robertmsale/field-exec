@@ -12,8 +12,7 @@ import '../../services/active_session_service.dart';
 import '../../services/conversation_store.dart';
 import '../../services/codex_session_store.dart';
 import '../../services/project_tabs_store.dart';
-import '../../services/secure_storage_service.dart';
-import '../../services/ssh_service.dart';
+import '../../rinf/rust_ssh_service.dart';
 import '../session/session_controller.dart';
 
 class ProjectSessionsController extends ProjectSessionsControllerBase {
@@ -38,8 +37,6 @@ class ProjectSessionsController extends ProjectSessionsControllerBase {
   ProjectTabsStore get _tabsStore => Get.find<ProjectTabsStore>();
   ConversationStore get _conversations => Get.find<ConversationStore>();
   ActiveSessionService get _active => Get.find<ActiveSessionService>();
-  SecureStorageService get _storage => Get.find<SecureStorageService>();
-  SshService get _ssh => Get.find<SshService>();
 
   @override
   void onInit() {
@@ -593,65 +590,46 @@ done
       );
     }
 
-    final pem = await _storage.read(
-      key: SecureStorageService.sshPrivateKeyPemKey,
-    );
-    if (pem == null || pem.trim().isEmpty) {
-      return const RunCommandResult(
-        exitCode: 1,
-        stdout: '',
-        stderr: 'No SSH private key set. Add one in Settings.',
-      );
-    }
-
     final remoteCmd = 'cd ${_shQuote(args.project.path)} && $cmd';
 
     const timeout = Duration(seconds: 60);
-
-    Future<SshCommandResult> runOnce({String? password}) {
-      return _ssh.runCommandWithResult(
+    try {
+      final res = await RustSshService.runCommandWithResult(
         host: profile.host,
         port: profile.port,
         username: profile.username,
-        privateKeyPem: pem,
-        password: password,
         command: 'sh -c ${_shQuote(remoteCmd)}',
-        timeout: timeout,
+        connectTimeout: const Duration(seconds: 10),
+        commandTimeout: timeout,
+        passwordProvider: () async {
+          if (_sshPassword != null && _sshPassword!.trim().isNotEmpty) {
+            return _sshPassword;
+          }
+          final pw = await _promptForPassword();
+          if (pw != null && pw.trim().isNotEmpty) _sshPassword = pw;
+          return pw;
+        },
       );
-    }
 
-    SshCommandResult result;
-    try {
-      result = await runOnce(password: _sshPassword);
-    } on TimeoutException {
-      return const RunCommandResult(
-        exitCode: 124,
-        stdout: '',
-        stderr: 'Command timed out after 60 seconds.',
+      return RunCommandResult(
+        exitCode: res.exitCode,
+        stdout: res.stdout,
+        stderr: res.stderr,
       );
-    } catch (_) {
-      if (_sshPassword == null) {
-        final pw = await _promptForPassword();
-        if (pw == null || pw.isEmpty) rethrow;
-        _sshPassword = pw;
-        try {
-          result = await runOnce(password: _sshPassword);
-        } on TimeoutException {
-          return const RunCommandResult(
-            exitCode: 124,
-            stdout: '',
-            stderr: 'Command timed out after 60 seconds.',
-          );
-        }
-      } else {
-        rethrow;
+    } catch (e) {
+      final msg = e.toString();
+      if (msg.contains('timeout')) {
+        return const RunCommandResult(
+          exitCode: 124,
+          stdout: '',
+          stderr: 'Command timed out after 60 seconds.',
+        );
       }
+      return RunCommandResult(
+        exitCode: 1,
+        stdout: '',
+        stderr: 'SSH failed: $e',
+      );
     }
-
-    return RunCommandResult(
-      exitCode: result.exitCode ?? -1,
-      stdout: result.stdout,
-      stderr: result.stderr,
-    );
   }
 }

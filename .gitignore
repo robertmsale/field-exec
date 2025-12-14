@@ -45,3 +45,12 @@ app.*.map.json
 /android/app/release
 
 .codex_remote
+
+# Rust related
+/.cargo/
+/target/
+
+# Generated signals
+/lib/src/bincode
+/lib/src/serde
+/lib/src/bindings

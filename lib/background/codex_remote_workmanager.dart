@@ -2,8 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ui';
 
+import 'package:flutter/widgets.dart';
+import 'package:rinf/rinf.dart';
 import 'package:workmanager/workmanager.dart';
 
+import '../rinf/rust_hosts.dart';
+import '../src/bindings/bindings.dart';
 import '../services/notification_service.dart';
 import '../services/remote_jobs_store.dart';
 import '../services/secure_storage_service.dart';
@@ -29,6 +33,17 @@ void codexRemoteCallbackDispatcher() {
 }
 
 Future<void> _checkRemoteJobs() async {
+  try {
+    WidgetsFlutterBinding.ensureInitialized();
+  } catch (_) {}
+
+  try {
+    await initializeRust(assignRustSignal);
+    await startRustHosts();
+  } catch (_) {
+    // Best-effort: background isolate may not support all plugins/FFI.
+  }
+
   final jobsStore = RemoteJobsStore();
   final jobs = await jobsStore.loadAll();
   if (jobs.isEmpty) return;

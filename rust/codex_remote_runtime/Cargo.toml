@@ -1,0 +1,20 @@
+[package]
+name = "codex_remote_runtime"
+version = "0.1.0"
+edition = "2024"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+wildcard_imports = "deny"
+
+[dependencies]
+codex_remote_adapters = { path = "../codex_remote_adapters" }
+codex_remote_rinf = { path = "../codex_remote_rinf" }
+codex_remote_api = { path = "../../native/codex_remote_api" }
+rinf = "8.8.1"
+tokio = { version = "1.45.0", features = ["rt", "sync", "time"] }
+async-ssh2-tokio = "0.12.1"
+russh = "0.55.0"
+ssh-key = { package = "internal-russh-forked-ssh-key", version = "0.6.11", default-features = true }
+rand_core = "0.6.4"

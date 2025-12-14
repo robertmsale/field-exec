@@ -72,9 +72,8 @@ class KeysController extends KeysControllerBase {
       status.value = 'No private key to derive public key from.';
       return;
     }
-    final line = _keys.toAuthorizedKeysLine(privateKeyPem: pem);
+    final line = await _keys.toAuthorizedKeysLine(privateKeyPem: pem);
     await Clipboard.setData(ClipboardData(text: line));
     status.value = 'Copied public key to clipboard.';
   }
 }
-

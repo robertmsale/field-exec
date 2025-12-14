@@ -4,9 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:design_system/design_system.dart';
 import 'package:get/get.dart';
 
+import '../../rinf/rust_ssh_service.dart';
 import '../../services/connection_history_service.dart';
 import '../../services/secure_storage_service.dart';
-import '../../services/ssh_service.dart';
 
 class ConnectionController extends ConnectionControllerBase {
   @override
@@ -28,9 +28,10 @@ class ConnectionController extends ConnectionControllerBase {
   @override
   final recentProfiles = <ConnectionProfile>[].obs;
 
+  String? _sshPassword;
+
   SecureStorageService get _storage => Get.find<SecureStorageService>();
   ConnectionHistoryService get _history => Get.find<ConnectionHistoryService>();
-  SshService get _ssh => Get.find<SshService>();
 
   @override
   void onInit() {
@@ -134,45 +135,37 @@ class ConnectionController extends ConnectionControllerBase {
       return;
     }
 
-    final host = profile.host;
-    final username = profile.username;
-    var privateKeyPem = privateKeyPemController.text.trim();
-    if (privateKeyPem.isEmpty) {
-      final fromKeychain =
-          (await _storage.read(key: SecureStorageService.sshPrivateKeyPemKey))
-              ?.trim();
-      if (fromKeychain != null && fromKeychain.isNotEmpty) {
-        privateKeyPem = fromKeychain;
-        privateKeyPemController.text = fromKeychain;
-      }
-    }
-    final privateKeyPassphrase = privateKeyPassphraseController.text;
-
     isBusy.value = true;
     status.value = 'Connecting...';
     try {
-      final keyAvailable = privateKeyPem.trim().isNotEmpty;
+      final host = profile.host;
+      final username = profile.username;
 
-      String? password;
-      if (!keyAvailable) {
-        password = await _promptForPassword();
-        if (password == null || password.isEmpty) {
-          status.value = 'Cancelled.';
-          return;
-        }
-      }
+      final privateKeyPemOverride = privateKeyPemController.text.trim();
+      final privateKeyPassphrase = privateKeyPassphraseController.text.trim();
 
-      final output = await _ssh.runCommand(
+      final res = await RustSshService.runCommandWithResult(
         host: host,
         port: port,
         username: username,
-        password: password,
-        privateKeyPem: privateKeyPem.isEmpty ? null : privateKeyPem,
+        command: 'whoami',
+        privateKeyPemOverride:
+            privateKeyPemOverride.isEmpty ? null : privateKeyPemOverride,
         privateKeyPassphrase:
             privateKeyPassphrase.isEmpty ? null : privateKeyPassphrase,
-        command: 'whoami',
+        connectTimeout: const Duration(seconds: 10),
+        commandTimeout: const Duration(seconds: 10),
+        passwordProvider: () async {
+          if (_sshPassword != null && _sshPassword!.trim().isNotEmpty) {
+            return _sshPassword;
+          }
+          final pw = await _promptForPassword();
+          if (pw != null && pw.trim().isNotEmpty) _sshPassword = pw;
+          return pw;
+        },
       );
-      status.value = 'SSH OK: ${output.trim()}';
+
+      status.value = 'SSH OK: ${res.stdout.trim()}';
 
       await _history.saveLast(profile);
       final existing = recentProfiles
@@ -190,32 +183,6 @@ class ConnectionController extends ConnectionControllerBase {
 
       Get.toNamed(DesignRoutes.projects, arguments: TargetArgs.remote(profile));
     } catch (e) {
-      // If key auth failed, prompt password and retry (password isn't stored).
-      final keyAvailable = privateKeyPem.trim().isNotEmpty;
-      if (keyAvailable) {
-        final pw = await _promptForPassword();
-        if (pw != null && pw.isNotEmpty) {
-          try {
-            final output = await _ssh.runCommand(
-              host: host,
-              port: port,
-              username: username,
-              password: pw,
-              privateKeyPem: privateKeyPem.isEmpty ? null : privateKeyPem,
-              privateKeyPassphrase:
-                  privateKeyPassphrase.isEmpty ? null : privateKeyPassphrase,
-              command: 'whoami',
-            );
-            status.value = 'SSH OK: ${output.trim()}';
-
-            await _history.saveLast(profile);
-            Get.toNamed(DesignRoutes.projects, arguments: TargetArgs.remote(profile));
-            return;
-          } catch (_) {
-            // fall through
-          }
-        }
-      }
       status.value = 'SSH failed: $e';
     } finally {
       isBusy.value = false;
