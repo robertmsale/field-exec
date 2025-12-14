@@ -16,108 +16,120 @@ class CodexChatView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = ChatTheme.fromThemeData(Theme.of(context));
-    return Chat(
-      chatController: controller.chatController,
-      currentUserId: 'user',
-      resolveUser: controller.resolveUser,
-      onMessageSend: controller.sendText,
-      theme: theme,
-      backgroundColor: theme.colors.surface,
-      builders: Builders(
-        chatAnimatedListBuilder: (context, itemBuilder) {
-          return ChatAnimatedList(
-            itemBuilder: itemBuilder,
-            bottomPadding: 120,
-          );
-        },
-        composerBuilder: (context) => CodexComposer(controller: controller),
-        emptyChatListBuilder: (context) {
-          return Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Text(
-                'Start a conversation. Use the Help button for tips.',
-                style: Theme.of(context).textTheme.bodyMedium,
-                textAlign: TextAlign.center,
+    return Obx(() {
+      final canLoadMore = controller.hasMoreHistory.value;
+
+      return Chat(
+        chatController: controller.chatController,
+        currentUserId: 'user',
+        resolveUser: controller.resolveUser,
+        onMessageSend: controller.sendText,
+        theme: theme,
+        backgroundColor: theme.colors.surface,
+        builders: Builders(
+          chatAnimatedListBuilder: (context, itemBuilder) {
+            return ChatAnimatedList(
+              itemBuilder: itemBuilder,
+              bottomPadding: 120,
+              onEndReached: canLoadMore ? controller.loadMoreHistory : null,
+            );
+          },
+          composerBuilder: (context) => CodexComposer(controller: controller),
+          emptyChatListBuilder: (context) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'Start a conversation. Use the Help button for tips.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                  textAlign: TextAlign.center,
+                ),
               ),
-            ),
-          );
-        },
-        customMessageBuilder: (
-          context,
-          message,
-          index, {
-          required bool isSentByMe,
-          MessageGroupStatus? groupStatus,
-        }) {
-          final meta = message.metadata ?? const {};
-          final kind = meta['kind']?.toString();
-
-          if (kind == 'codex_image') {
-            return _CodexImageBubble(controller: controller, message: message);
-          }
-
-          if (kind == 'codex_image_grid') {
-            return _CodexImageGridBubble(controller: controller, message: message);
-          }
-
-          if (kind == 'codex_actions') {
-            final actions = (meta['actions'] as List?) ?? const [];
-            if (actions.isEmpty) return const SizedBox.shrink();
-            return Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: actions.whereType<Map>().map((a) {
-                final label = a['label']?.toString() ?? '';
-                final value = a['value']?.toString() ?? '';
-                return Obx(
-                  () => OutlinedButton(
-                    onPressed: controller.isRunning.value
-                        ? null
-                        : () => controller.sendQuickReply(value),
-                    child: Text(label),
-                  ),
-                );
-              }).toList(),
             );
-          }
+          },
+          customMessageBuilder:
+              (
+                context,
+                message,
+                index, {
+                required bool isSentByMe,
+                MessageGroupStatus? groupStatus,
+              }) {
+                final meta = message.metadata ?? const {};
+                final kind = meta['kind']?.toString();
 
-          if (kind == 'codex_event') {
-            final eventType = meta['eventType']?.toString() ?? 'event';
-            if (eventType == 'welcome' ||
-                eventType == 'remote_job' ||
-                eventType == 'thread.started' ||
-                eventType == 'turn.started' ||
-                eventType == 'turn.completed') {
-              return const SizedBox.shrink();
-            }
-            final text = meta['text']?.toString() ?? '';
-            return _CodexEventBubble(eventType: eventType, text: text);
-          }
+                if (kind == 'codex_image') {
+                  return _CodexImageBubble(
+                    controller: controller,
+                    message: message,
+                  );
+                }
 
-          if (kind == 'codex_item') {
-            final itemType = meta['itemType']?.toString() ?? 'item';
-            final eventType = meta['eventType']?.toString();
-            if (eventType == 'item.started') {
-              return const SizedBox.shrink();
-            }
-            if (itemType == 'reasoning' || itemType == 'agent_message') {
-              return const SizedBox.shrink();
-            }
-            final text = meta['text']?.toString() ?? '';
-            final item = meta['item'];
-            return _CodexItemBubble(
-              itemType: itemType,
-              eventType: eventType,
-              text: text,
-              item: item is Map ? item : null,
-            );
-          }
+                if (kind == 'codex_image_grid') {
+                  return _CodexImageGridBubble(
+                    controller: controller,
+                    message: message,
+                  );
+                }
 
-          return const SizedBox.shrink();
-        },
-      ),
-    );
+                if (kind == 'codex_actions') {
+                  final actions = (meta['actions'] as List?) ?? const [];
+                  if (actions.isEmpty) return const SizedBox.shrink();
+                  return Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: actions.whereType<Map>().map((a) {
+                      final label = a['label']?.toString() ?? '';
+                      final value = a['value']?.toString() ?? '';
+                      return Obx(
+                        () => OutlinedButton(
+                          onPressed: controller.isRunning.value
+                              ? null
+                              : () => controller.sendQuickReply(value),
+                          child: Text(label),
+                        ),
+                      );
+                    }).toList(),
+                  );
+                }
+
+                if (kind == 'codex_event') {
+                  final eventType = meta['eventType']?.toString() ?? 'event';
+                  if (eventType == 'welcome' ||
+                      eventType == 'remote_job' ||
+                      eventType == 'thread.started' ||
+                      eventType == 'turn.started' ||
+                      eventType == 'turn.completed') {
+                    return const SizedBox.shrink();
+                  }
+                  final text = meta['text']?.toString() ?? '';
+                  return _CodexEventBubble(eventType: eventType, text: text);
+                }
+
+                if (kind == 'codex_item') {
+                  final itemType = meta['itemType']?.toString() ?? 'item';
+                  final eventType = meta['eventType']?.toString();
+                  if (eventType == 'item.started') {
+                    return const SizedBox.shrink();
+                  }
+                  if (itemType == 'reasoning' || itemType == 'agent_message') {
+                    return const SizedBox.shrink();
+                  }
+                  final text = meta['text']?.toString() ?? '';
+                  final item = meta['item'];
+                  return _CodexItemBubble(
+                    itemType: itemType,
+                    eventType: eventType,
+                    text: text,
+                    item: item is Map ? item : null,
+                  );
+                }
+
+                return const SizedBox.shrink();
+              },
+        ),
+      );
+    });
   }
 }
 
@@ -131,7 +143,8 @@ class _CodexEventBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    final isError = eventType == 'stderr' ||
+    final isError =
+        eventType == 'stderr' ||
         eventType == 'tail_stderr' ||
         eventType == 'error' ||
         eventType == 'git_commit_failed' ||
@@ -144,26 +157,26 @@ class _CodexEventBubble extends StatelessWidget {
     final bg = isError
         ? cs.errorContainer
         : isSuccess
-            ? cs.tertiaryContainer
-            : isCommand
-                ? cs.secondaryContainer
-                : cs.surfaceContainerHighest;
+        ? cs.tertiaryContainer
+        : isCommand
+        ? cs.secondaryContainer
+        : cs.surfaceContainerHighest;
 
     final fg = isError
         ? cs.onErrorContainer
         : isSuccess
-            ? cs.onTertiaryContainer
-            : isCommand
-                ? cs.onSecondaryContainer
-                : cs.onSurface;
+        ? cs.onTertiaryContainer
+        : isCommand
+        ? cs.onSecondaryContainer
+        : cs.onSurface;
 
     final icon = isError
         ? Icons.error_outline
         : isSuccess
-            ? Icons.check_circle_outline
-            : isCommand
-                ? Icons.terminal
-                : Icons.info_outline;
+        ? Icons.check_circle_outline
+        : isCommand
+        ? Icons.terminal
+        : Icons.info_outline;
 
     return _CodexBubble(
       icon: icon,
@@ -222,7 +235,10 @@ class _CodexItemBubble extends StatelessWidget {
         fg = cs.onPrimaryContainer;
         final path = item?['path']?.toString();
         final summary = item?['summary']?.toString();
-        if (summary != null && summary.isNotEmpty && path != null && path.isNotEmpty) {
+        if (summary != null &&
+            summary.isNotEmpty &&
+            path != null &&
+            path.isNotEmpty) {
           body = '$summary\n$path';
         } else if (path != null && path.isNotEmpty) {
           body = path;
@@ -243,7 +259,8 @@ class _CodexItemBubble extends StatelessWidget {
         fg = cs.onTertiaryContainer;
         final tool = item?['tool']?.toString();
         final topic = item?['topic']?.toString();
-        if ((tool != null && tool.isNotEmpty) || (topic != null && topic.isNotEmpty)) {
+        if ((tool != null && tool.isNotEmpty) ||
+            (topic != null && topic.isNotEmpty)) {
           body = [
             if (tool != null && tool.isNotEmpty) tool,
             if (topic != null && topic.isNotEmpty) topic,
@@ -319,10 +336,10 @@ class _CodexTodoListBubble extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
       ),
       child: DefaultTextStyle(
-        style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: foreground) ??
+        style:
+            Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: foreground) ??
             TextStyle(fontSize: 12, color: foreground),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -334,10 +351,9 @@ class _CodexTodoListBubble extends StatelessWidget {
                 Expanded(
                   child: Text(
                     title,
-                    style: Theme.of(context)
-                        .textTheme
-                        .labelMedium
-                        ?.copyWith(color: foreground),
+                    style: Theme.of(
+                      context,
+                    ).textTheme.labelMedium?.copyWith(color: foreground),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -462,9 +478,7 @@ class _CodexImageBubble extends StatelessWidget {
                           padding: const EdgeInsets.all(12),
                           child: Text(
                             caption,
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodyMedium
+                            style: Theme.of(context).textTheme.bodyMedium
                                 ?.copyWith(color: Colors.white),
                             textAlign: TextAlign.center,
                           ),
@@ -512,15 +526,18 @@ class _CodexImageBubble extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(Icons.broken_image_outlined, size: 18, color: cs.onErrorContainer),
+            Icon(
+              Icons.broken_image_outlined,
+              size: 18,
+              color: cs.onErrorContainer,
+            ),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
                 error.trim().isEmpty ? 'Failed to load image.' : error.trim(),
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
-                    ?.copyWith(color: cs.onErrorContainer),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: cs.onErrorContainer),
               ),
             ),
             const SizedBox(width: 8),
@@ -547,10 +564,9 @@ class _CodexImageBubble extends StatelessWidget {
               const SizedBox(height: 8),
               Text(
                 loading ? 'Loading…' : 'Tap to load',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
-                    ?.copyWith(color: fg.withValues(alpha: 0.8)),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: fg.withValues(alpha: 0.8),
+                ),
               ),
             ],
           ),
@@ -561,7 +577,7 @@ class _CodexImageBubble extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-            onTap: loading ? null : onTap,
+        onTap: loading ? null : onTap,
         borderRadius: BorderRadius.circular(12),
         child: Container(
           padding: const EdgeInsets.all(10),
@@ -570,10 +586,8 @@ class _CodexImageBubble extends StatelessWidget {
             borderRadius: BorderRadius.circular(12),
           ),
           child: DefaultTextStyle(
-            style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
-                    ?.copyWith(color: fg) ??
+            style:
+                Theme.of(context).textTheme.bodySmall?.copyWith(color: fg) ??
                 TextStyle(fontSize: 12, color: fg),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -585,10 +599,9 @@ class _CodexImageBubble extends StatelessWidget {
                     Expanded(
                       child: Text(
                         title,
-                        style: Theme.of(context)
-                            .textTheme
-                            .labelMedium
-                            ?.copyWith(color: fg),
+                        style: Theme.of(
+                          context,
+                        ).textTheme.labelMedium?.copyWith(color: fg),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -612,10 +625,9 @@ class _CodexImageBubble extends StatelessWidget {
                   const SizedBox(height: 8),
                   Text(
                     caption.trim(),
-                    style: Theme.of(context)
-                        .textTheme
-                        .bodySmall
-                        ?.copyWith(color: fg.withValues(alpha: 0.85)),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: fg.withValues(alpha: 0.85),
+                    ),
                   ),
                 ],
               ],
@@ -631,7 +643,10 @@ class _CodexImageGridBubble extends StatelessWidget {
   final SessionControllerBase controller;
   final CustomMessage message;
 
-  const _CodexImageGridBubble({required this.controller, required this.message});
+  const _CodexImageGridBubble({
+    required this.controller,
+    required this.message,
+  });
 
   static const double _tileSize = 160;
   static const double _gap = 8;
@@ -644,7 +659,10 @@ class _CodexImageGridBubble extends StatelessWidget {
     final raw = meta['images'];
     if (raw is! List) return const SizedBox.shrink();
 
-    final images = raw.whereType<Map>().map((m) => m.cast<String, Object?>()).toList();
+    final images = raw
+        .whereType<Map>()
+        .map((m) => m.cast<String, Object?>())
+        .toList();
     if (images.isEmpty) return const SizedBox.shrink();
 
     Future<void> openFullscreen(Uint8List bytes, {String caption = ''}) async {
@@ -695,10 +713,9 @@ class _CodexImageGridBubble extends StatelessWidget {
                         padding: const EdgeInsets.all(12),
                         child: Text(
                           caption.trim(),
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodyMedium
-                              ?.copyWith(color: Colors.white),
+                          style: Theme.of(
+                            context,
+                          ).textTheme.bodyMedium?.copyWith(color: Colors.white),
                           textAlign: TextAlign.center,
                         ),
                       ),
@@ -733,7 +750,9 @@ class _CodexImageGridBubble extends StatelessWidget {
         await controller.loadImageAttachment(message, index: i);
       }
 
-      final label = path.isEmpty ? 'Image' : (path.split('/').last.isEmpty ? 'Image' : path.split('/').last);
+      final label = path.isEmpty
+          ? 'Image'
+          : (path.split('/').last.isEmpty ? 'Image' : path.split('/').last);
 
       Widget inner;
       if (loaded) {
@@ -764,18 +783,16 @@ class _CodexImageGridBubble extends StatelessWidget {
               const SizedBox(height: 8),
               Text(
                 'Failed',
-                style: Theme.of(context)
-                    .textTheme
-                    .labelMedium
-                    ?.copyWith(color: cs.onErrorContainer),
+                style: Theme.of(
+                  context,
+                ).textTheme.labelMedium?.copyWith(color: cs.onErrorContainer),
               ),
               const SizedBox(height: 6),
               Text(
                 details.isEmpty ? 'Tap to retry' : details,
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
-                    ?.copyWith(color: cs.onErrorContainer.withValues(alpha: 0.85)),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: cs.onErrorContainer.withValues(alpha: 0.85),
+                ),
                 maxLines: 3,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
@@ -798,10 +815,9 @@ class _CodexImageGridBubble extends StatelessWidget {
                 const SizedBox(height: 8),
                 Text(
                   loading ? 'Loading…' : 'Tap to load',
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodySmall
-                      ?.copyWith(color: fg.withValues(alpha: 0.8)),
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: fg.withValues(alpha: 0.8),
+                  ),
                 ),
               ],
             ),
@@ -825,17 +841,21 @@ class _CodexImageGridBubble extends StatelessWidget {
                   right: 8,
                   bottom: 8,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 6,
+                    ),
                     decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: loaded ? 0.35 : 0.18),
+                      color: Colors.black.withValues(
+                        alpha: loaded ? 0.35 : 0.18,
+                      ),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
                       caption.trim().isNotEmpty ? caption.trim() : label,
-                      style: Theme.of(context)
-                          .textTheme
-                          .labelSmall
-                          ?.copyWith(color: Colors.white),
+                      style: Theme.of(
+                        context,
+                      ).textTheme.labelSmall?.copyWith(color: Colors.white),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       textAlign: TextAlign.center,
@@ -863,7 +883,9 @@ class _CodexImageGridBubble extends StatelessWidget {
     }
 
     final bg = cs.surfaceContainerHigh;
-    final titleStyle = Theme.of(context).textTheme.labelMedium?.copyWith(color: fg);
+    final titleStyle = Theme.of(
+      context,
+    ).textTheme.labelMedium?.copyWith(color: fg);
     final count = images.length;
 
     return Container(
@@ -916,10 +938,9 @@ Widget _imageDecodeError(BuildContext context) {
         Expanded(
           child: Text(
             'Invalid image data.',
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: cs.onErrorContainer),
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: cs.onErrorContainer),
           ),
         ),
       ],
@@ -946,14 +967,13 @@ class _CodexBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final titleStyle = Theme.of(context)
-        .textTheme
-        .labelMedium
-        ?.copyWith(color: foreground);
+    final titleStyle = Theme.of(
+      context,
+    ).textTheme.labelMedium?.copyWith(color: foreground);
     final bodyStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
-          color: foreground,
-          fontFamily: monospaceBody ? 'monospace' : null,
-        );
+      color: foreground,
+      fontFamily: monospaceBody ? 'monospace' : null,
+    );
 
     return Container(
       padding: const EdgeInsets.all(10),

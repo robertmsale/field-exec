@@ -770,12 +770,17 @@ class MockSessionController extends SessionControllerBase {
   @override
   final isRunning = false.obs;
   @override
+  final isLoadingMoreHistory = false.obs;
+  @override
+  final hasMoreHistory = true.obs;
+  @override
   final threadId = RxnString('thread_mock_1234');
   @override
   final remoteJobId = RxnString('tmux:cr_tab1_1730000000000');
   @override
   final thinkingPreview = RxnString();
 
+  var _loadMoreCount = 0;
   static const _me = 'user';
   static const _codex = 'codex';
   static const _system = 'system';
@@ -1123,11 +1128,44 @@ class MockSessionController extends SessionControllerBase {
   Future<void> reattachIfNeeded({int backfillLines = 200}) async {}
 
   @override
+  Future<void> loadMoreHistory() async {
+    if (isLoadingMoreHistory.value) return;
+    if (!hasMoreHistory.value) return;
+
+    isLoadingMoreHistory.value = true;
+    try {
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      _loadMoreCount++;
+
+      final now = DateTime.now().toUtc();
+      final older = List<Message>.generate(6, (i) {
+        final idx = _loadMoreCount * 6 + i;
+        return Message.text(
+          id: _uuid.v4(),
+          authorId: idx.isEven ? _me : _codex,
+          createdAt: now.subtract(Duration(minutes: 10 + idx)),
+          text: 'Mock older message #$idx',
+        );
+      });
+
+      await chatController.insertAllMessages(older, index: 0, animated: false);
+
+      if (_loadMoreCount >= 2) {
+        hasMoreHistory.value = false;
+      }
+    } finally {
+      isLoadingMoreHistory.value = false;
+    }
+  }
+
+  @override
   Future<void> resetSession() async {
     threadId.value = null;
     remoteJobId.value = null;
     thinkingPreview.value = null;
     isRunning.value = false;
+    isLoadingMoreHistory.value = false;
+    hasMoreHistory.value = false;
     await chatController.setMessages(const [], animated: false);
   }
 

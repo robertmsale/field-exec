@@ -7,6 +7,8 @@ abstract class SessionControllerBase extends GetxController {
   TextEditingController get inputController;
 
   RxBool get isRunning;
+  RxBool get isLoadingMoreHistory;
+  RxBool get hasMoreHistory;
   RxnString get threadId;
   RxnString get remoteJobId;
   RxnString get thinkingPreview;
@@ -17,6 +19,7 @@ abstract class SessionControllerBase extends GetxController {
   Future<void> sendQuickReply(String value);
   Future<void> resumeThreadById(String id, {String? preview});
   Future<void> reattachIfNeeded({int backfillLines});
+  Future<void> loadMoreHistory();
   Future<void> loadImageAttachment(CustomMessage message, {int? index});
   Future<void> resetSession();
   void stop();

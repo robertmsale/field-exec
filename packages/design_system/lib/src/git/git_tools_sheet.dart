@@ -840,12 +840,28 @@ class _GitDiffSheetState extends State<GitDiffSheet> {
       (sum, s) => sum + _countLines(s.diffText, '-'),
     );
 
+    const monoFallback = <String>[
+      'ui-monospace',
+      'SF Mono',
+      'Menlo',
+      'Monaco',
+      'Consolas',
+      'Liberation Mono',
+      'Courier New',
+      'monospace',
+    ];
     final mono =
         Theme.of(context).textTheme.bodySmall?.copyWith(
-          fontFamily: 'RobotoMono',
+          fontFamily: 'monospace',
+          fontFamilyFallback: monoFallback,
           height: 1.25,
         ) ??
-        const TextStyle(fontFamily: 'RobotoMono', fontSize: 12, height: 1.25);
+        const TextStyle(
+          fontFamily: 'monospace',
+          fontFamilyFallback: monoFallback,
+          fontSize: 12,
+          height: 1.25,
+        );
 
     return SafeArea(
       child: SizedBox(
@@ -1045,20 +1061,31 @@ class _GitDiffSheetState extends State<GitDiffSheet> {
                                   childrenPadding: EdgeInsets.zero,
                                   children: [
                                     const Divider(height: 1),
-                                    for (final line in hunk.lines)
-                                      Container(
-                                        color: _lineBg(context, line),
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 12,
-                                          vertical: 2,
-                                        ),
-                                        child: Text(
-                                          line.isEmpty ? ' ' : line,
-                                          style: mono.copyWith(
-                                            color: _lineFg(context, line),
+                                    LayoutBuilder(
+                                      builder: (context, constraints) {
+                                        final minWidth = constraints.maxWidth;
+                                        return SingleChildScrollView(
+                                          scrollDirection: Axis.horizontal,
+                                          child: ConstrainedBox(
+                                            constraints: BoxConstraints(
+                                              minWidth: minWidth,
+                                            ),
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.stretch,
+                                              children: [
+                                                for (final line in hunk.lines)
+                                                  _DiffLine(
+                                                    line: line,
+                                                    minWidth: minWidth,
+                                                    style: mono,
+                                                  ),
+                                              ],
+                                            ),
                                           ),
-                                        ),
-                                      ),
+                                        );
+                                      },
+                                    ),
                                   ],
                                 ),
                               ),
@@ -1087,11 +1114,14 @@ class _GitDiffSheetState extends State<GitDiffSheet> {
 
   static Color? _lineBg(BuildContext context, String line) {
     final cs = Theme.of(context).colorScheme;
-    if (line.startsWith('+') && !line.startsWith('+++')) {
-      return cs.tertiary.withValues(alpha: 0.10);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    if (line.startsWith('+')) {
+      final fg = isDark ? Colors.green.shade300 : Colors.green.shade800;
+      return fg.withValues(alpha: isDark ? 0.18 : 0.12);
     }
-    if (line.startsWith('-') && !line.startsWith('---')) {
-      return cs.error.withValues(alpha: 0.10);
+    if (line.startsWith('-')) {
+      final fg = isDark ? Colors.red.shade300 : Colors.red.shade800;
+      return fg.withValues(alpha: isDark ? 0.18 : 0.12);
     }
     if (line.startsWith('@@')) {
       return cs.surfaceContainerHigh;
@@ -1101,11 +1131,12 @@ class _GitDiffSheetState extends State<GitDiffSheet> {
 
   static Color? _lineFg(BuildContext context, String line) {
     final cs = Theme.of(context).colorScheme;
-    if (line.startsWith('+') && !line.startsWith('+++')) {
-      return cs.tertiary;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    if (line.startsWith('+')) {
+      return isDark ? Colors.green.shade300 : Colors.green.shade800;
     }
-    if (line.startsWith('-') && !line.startsWith('---')) {
-      return cs.error;
+    if (line.startsWith('-')) {
+      return isDark ? Colors.red.shade300 : Colors.red.shade800;
     }
     if (line.startsWith('@@')) {
       return cs.onSurface;
@@ -1143,6 +1174,42 @@ class _GitDiffSheetState extends State<GitDiffSheet> {
       );
     }
     return sections;
+  }
+}
+
+class _DiffLine extends StatelessWidget {
+  const _DiffLine({
+    required this.line,
+    required this.minWidth,
+    required this.style,
+  });
+
+  final String line;
+  final double minWidth;
+  final TextStyle style;
+
+  @override
+  Widget build(BuildContext context) {
+    final bg = _GitDiffSheetState._lineBg(context, line);
+    final fg =
+        _GitDiffSheetState._lineFg(context, line) ??
+        Theme.of(context).colorScheme.onSurface;
+
+    return ColoredBox(
+      color: bg ?? Colors.transparent,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minWidth: minWidth),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+          child: Text(
+            line.isEmpty ? ' ' : line,
+            style: style.copyWith(color: fg),
+            textAlign: TextAlign.left,
+            softWrap: false,
+          ),
+        ),
+      ),
+    );
   }
 }
 
