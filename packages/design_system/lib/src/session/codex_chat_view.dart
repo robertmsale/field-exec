@@ -54,6 +54,10 @@ class CodexChatView extends StatelessWidget {
             return _CodexImageBubble(controller: controller, message: message);
           }
 
+          if (kind == 'codex_image_grid') {
+            return _CodexImageGridBubble(controller: controller, message: message);
+          }
+
           if (kind == 'codex_actions') {
             final actions = (meta['actions'] as List?) ?? const [];
             if (actions.isEmpty) return const SizedBox.shrink();
@@ -542,7 +546,7 @@ class _CodexImageBubble extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: loading ? null : onTap,
+            onTap: loading ? null : onTap,
         borderRadius: BorderRadius.circular(12),
         child: Container(
           padding: const EdgeInsets.all(10),
@@ -603,6 +607,264 @@ class _CodexImageBubble extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _CodexImageGridBubble extends StatelessWidget {
+  final SessionControllerBase controller;
+  final CustomMessage message;
+
+  const _CodexImageGridBubble({required this.controller, required this.message});
+
+  static const double _tileSize = 160;
+  static const double _gap = 8;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final fg = cs.onSurface;
+    final meta = message.metadata ?? const {};
+    final raw = meta['images'];
+    if (raw is! List) return const SizedBox.shrink();
+
+    final images = raw.whereType<Map>().map((m) => m.cast<String, Object?>()).toList();
+    if (images.isEmpty) return const SizedBox.shrink();
+
+    Future<void> openFullscreen(Uint8List bytes, {String caption = ''}) async {
+      await showDialog<void>(
+        context: context,
+        barrierColor: Colors.black.withValues(alpha: 0.92),
+        builder: (context) {
+          return Dialog(
+            insetPadding: EdgeInsets.zero,
+            backgroundColor: Colors.transparent,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: GestureDetector(
+                    onTap: () => Navigator.of(context).pop(),
+                    child: InteractiveViewer(
+                      minScale: 0.5,
+                      maxScale: 6,
+                      child: Center(
+                        child: Image.memory(bytes, fit: BoxFit.contain),
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  top: 24,
+                  right: 24,
+                  child: IconButton.filledTonal(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close),
+                  ),
+                ),
+                if (caption.trim().isNotEmpty)
+                  Positioned(
+                    left: 24,
+                    right: 24,
+                    bottom: 24,
+                    child: Material(
+                      color: Colors.black.withValues(alpha: 0.35),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Text(
+                          caption.trim(),
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodyMedium
+                              ?.copyWith(color: Colors.white),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          );
+        },
+      );
+    }
+
+    Widget tileFor(int i) {
+      final img = images[i];
+      final path = img['path']?.toString() ?? '';
+      final caption = img['caption']?.toString() ?? '';
+      final status = img['status']?.toString() ?? 'tap_to_load';
+      final error = img['error']?.toString() ?? '';
+      final bytes = img['bytes'];
+      final Uint8List? imgBytes = bytes is Uint8List ? bytes : null;
+      final loaded = imgBytes?.isNotEmpty ?? false;
+      final loading = status == 'loading' && !loaded;
+      final hasError = status == 'error';
+
+      Future<void> onTap() async {
+        if (loaded) {
+          final b = imgBytes;
+          if (b == null) return;
+          await openFullscreen(b, caption: caption);
+          return;
+        }
+        await controller.loadImageAttachment(message, index: i);
+      }
+
+      final label = path.isEmpty ? 'Image' : (path.split('/').last.isEmpty ? 'Image' : path.split('/').last);
+
+      Widget inner;
+      if (loaded) {
+        final b = imgBytes;
+        if (b == null) return const SizedBox.shrink();
+        inner = ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: Image.memory(b, fit: BoxFit.contain),
+        );
+      } else if (hasError) {
+        inner = Container(
+          decoration: BoxDecoration(
+            color: cs.errorContainer,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          padding: const EdgeInsets.all(10),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.broken_image_outlined, color: cs.onErrorContainer),
+              const SizedBox(height: 8),
+              Text(
+                error.trim().isEmpty ? 'Failed' : 'Failed',
+                style: Theme.of(context)
+                    .textTheme
+                    .labelMedium
+                    ?.copyWith(color: cs.onErrorContainer),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Tap to retry',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: cs.onErrorContainer.withValues(alpha: 0.85)),
+              ),
+            ],
+          ),
+        );
+      } else {
+        inner = Container(
+          decoration: BoxDecoration(
+            color: cs.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.6)),
+          ),
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.image_outlined, color: fg.withValues(alpha: 0.7)),
+                const SizedBox(height: 8),
+                Text(
+                  loading ? 'Loading…' : 'Tap to load',
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: fg.withValues(alpha: 0.8)),
+                ),
+              ],
+            ),
+          ),
+        );
+      }
+
+      return Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: loading ? null : onTap,
+          borderRadius: BorderRadius.circular(12),
+          child: SizedBox(
+            width: _tileSize,
+            height: _tileSize,
+            child: Stack(
+              children: [
+                Positioned.fill(child: inner),
+                Positioned(
+                  left: 8,
+                  right: 8,
+                  bottom: 8,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: loaded ? 0.35 : 0.18),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      caption.trim().isNotEmpty ? caption.trim() : label,
+                      style: Theme.of(context)
+                          .textTheme
+                          .labelSmall
+                          ?.copyWith(color: Colors.white),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+                if (loading)
+                  Positioned(
+                    top: 10,
+                    right: 10,
+                    child: SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white.withValues(alpha: 0.9),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final bg = cs.surfaceContainerHigh;
+    final titleStyle = Theme.of(context).textTheme.labelMedium?.copyWith(color: fg);
+    final count = images.length;
+
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.photo_library_outlined, size: 14, color: fg),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  count == 1 ? 'Image' : 'Images ($count)',
+                  style: titleStyle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: _gap,
+            runSpacing: _gap,
+            children: List.generate(count, tileFor),
+          ),
+        ],
       ),
     );
   }

@@ -240,38 +240,86 @@ class SessionController extends SessionControllerBase {
   Future<void> sendQuickReply(String value) => sendText(value);
 
   @override
-  Future<void> loadImageAttachment(CustomMessage message) async {
+  Future<void> loadImageAttachment(CustomMessage message, {int? index}) async {
     final meta = message.metadata ?? const {};
-    if (meta['kind']?.toString() != 'codex_image') return;
+    final kind = meta['kind']?.toString();
+    if (kind == 'codex_image') {
+      final existingBytes = meta['bytes'];
+      if (existingBytes is Uint8List && existingBytes.isNotEmpty) return;
 
-    final existingBytes = meta['bytes'];
-    if (existingBytes is Uint8List && existingBytes.isNotEmpty) return;
+      final status = meta['status']?.toString() ?? '';
+      if (status == 'loading') return;
 
-    final status = meta['status']?.toString() ?? '';
-    if (status == 'loading') return;
+      String rawPath = meta['path']?.toString() ?? '';
+      if (rawPath.trim().isEmpty) return;
 
-    String rawPath = meta['path']?.toString() ?? '';
-    if (rawPath.trim().isEmpty) return;
+      rawPath = _normalizeWorkspacePath(rawPath);
+      if (!_isPathWithinWorkspace(rawPath)) {
+        await _updateImageMessage(
+          message,
+          status: 'error',
+          error: 'Image path is outside the workspace.',
+        );
+        return;
+      }
 
-    rawPath = _normalizeWorkspacePath(rawPath);
-    if (!_isPathWithinWorkspace(rawPath)) {
-      await _updateImageMessage(
-        message,
-        status: 'error',
-        error: 'Image path is outside the workspace.',
-      );
+      await _updateImageMessage(message, status: 'loading');
+
+      try {
+        final bytes = target.local
+            ? await _readLocalImageBytes(rawPath)
+            : await _readRemoteImageBytes(rawPath);
+        await _updateImageMessage(message, status: 'loaded', bytes: bytes);
+      } catch (e) {
+        await _updateImageMessage(message, status: 'error', error: '$e');
+      }
       return;
     }
 
-    await _updateImageMessage(message, status: 'loading');
+    if (kind != 'codex_image_grid') return;
 
-    try {
-      final bytes = target.local
-          ? await _readLocalImageBytes(rawPath)
-          : await _readRemoteImageBytes(rawPath);
-      await _updateImageMessage(message, status: 'loaded', bytes: bytes);
-    } catch (e) {
-      await _updateImageMessage(message, status: 'error', error: '$e');
+    final rawImages = meta['images'];
+    if (rawImages is! List) return;
+    final images = rawImages.whereType<Map>().map((m) => Map<String, Object?>.from(m)).toList();
+    if (images.isEmpty) return;
+
+    final indices = <int>[];
+    if (index != null) {
+      if (index < 0 || index >= images.length) return;
+      indices.add(index);
+    } else {
+      for (var i = 0; i < images.length; i++) {
+        indices.add(i);
+      }
+    }
+
+    for (final i in indices) {
+      final entry = images[i];
+      final existingBytes = entry['bytes'];
+      if (existingBytes is Uint8List && existingBytes.isNotEmpty) continue;
+
+      final status = entry['status']?.toString() ?? '';
+      if (status == 'loading') continue;
+
+      String rawPath = entry['path']?.toString() ?? '';
+      if (rawPath.trim().isEmpty) continue;
+
+      rawPath = _normalizeWorkspacePath(rawPath);
+      if (!_isPathWithinWorkspace(rawPath)) {
+        await _updateImageGridMessage(message, i, status: 'error', error: 'Image path is outside the workspace.');
+        continue;
+      }
+
+      await _updateImageGridMessage(message, i, status: 'loading');
+
+      try {
+        final bytes = target.local
+            ? await _readLocalImageBytes(rawPath)
+            : await _readRemoteImageBytes(rawPath);
+        await _updateImageGridMessage(message, i, status: 'loaded', bytes: bytes);
+      } catch (e) {
+        await _updateImageGridMessage(message, i, status: 'error', error: '$e');
+      }
     }
   }
 
@@ -381,6 +429,39 @@ class SessionController extends SessionControllerBase {
       } else {
         next.remove('error');
       }
+      await chatController.updateMessage(message, message.copyWith(metadata: next));
+    } catch (_) {}
+  }
+
+  Future<void> _updateImageGridMessage(
+    CustomMessage message,
+    int index, {
+    required String status,
+    Uint8List? bytes,
+    String? error,
+  }) async {
+    try {
+      final next = Map<String, Object?>.from(message.metadata ?? const {});
+      final rawImages = next['images'];
+      if (rawImages is! List) return;
+      if (index < 0 || index >= rawImages.length) return;
+      final items = rawImages
+          .whereType<Map>()
+          .map((m) => Map<String, Object?>.from(m))
+          .toList(growable: false);
+      if (index >= items.length) return;
+
+      final item = Map<String, Object?>.from(items[index]);
+      item['status'] = status;
+      if (bytes != null) item['bytes'] = bytes;
+      if (error != null && error.trim().isNotEmpty) {
+        item['error'] = error.trim();
+      } else {
+        item.remove('error');
+      }
+      items[index] = item;
+      next['images'] = items;
+
       await chatController.updateMessage(message, message.copyWith(metadata: next));
     } catch (_) {}
   }
@@ -2161,9 +2242,13 @@ class SessionController extends SessionControllerBase {
             for (final m in messages) {
               if (m is! CustomMessage) continue;
               final meta = m.metadata ?? const {};
-              if (meta['kind']?.toString() != 'codex_image') continue;
-              final status = meta['status']?.toString();
-              if (status == 'loading') {
+              final kind = meta['kind']?.toString();
+              if (kind == 'codex_image') {
+                final status = meta['status']?.toString();
+                if (status == 'loading') {
+                  unawaited(loadImageAttachment(m));
+                }
+              } else if (kind == 'codex_image_grid') {
                 unawaited(loadImageAttachment(m));
               }
             }
@@ -2209,19 +2294,23 @@ class SessionController extends SessionControllerBase {
           ),
         ];
 
-        for (final img in resp.images) {
-          final path = img.path.trim();
-          if (path.isEmpty) continue;
+        if (resp.images.isNotEmpty) {
           out.add(
             Message.custom(
               id: _uuid.v4(),
               authorId: _codex,
               createdAt: DateTime.now().toUtc(),
               metadata: {
-                'kind': 'codex_image',
-                'path': path,
-                if (img.caption.trim().isNotEmpty) 'caption': img.caption.trim(),
-                'status': replay ? 'tap_to_load' : 'loading',
+                'kind': 'codex_image_grid',
+                'images': resp.images
+                    .map((img) => {
+                          'path': img.path.trim(),
+                          if (img.caption.trim().isNotEmpty)
+                            'caption': img.caption.trim(),
+                          'status': replay ? 'tap_to_load' : 'loading',
+                        })
+                    .where((m) => (m['path']?.toString().trim() ?? '').isNotEmpty)
+                    .toList(growable: false),
               },
             ),
           );

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:io';
 
 import 'package:design_system/design_system.dart';
 import 'package:flutter/material.dart';
@@ -611,10 +612,33 @@ class MockSessionController extends SessionControllerBase {
           authorId: _codex,
           createdAt: t6.add(const Duration(seconds: 1, milliseconds: 200)),
           metadata: const {
-            'kind': 'codex_image',
-            'path': '/workspace/goldens/failure.png',
-            'caption': 'Golden diff (mock). Tap to load.',
-            'status': 'tap_to_load',
+            'kind': 'codex_image_grid',
+            'images': [
+              {
+                'path':
+                    'macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_512.png',
+                'caption': 'Golden diff A (mock)',
+                'status': 'tap_to_load',
+              },
+              {
+                'path':
+                    'macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_512.png',
+                'caption': 'Golden diff B (mock)',
+                'status': 'tap_to_load',
+              },
+              {
+                'path':
+                    'macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_512.png',
+                'caption': 'Golden diff C (mock)',
+                'status': 'tap_to_load',
+              },
+              {
+                'path':
+                    'macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_512.png',
+                'caption': 'Golden diff D (mock)',
+                'status': 'tap_to_load',
+              },
+            ],
           },
         ),
         event('commit_message', 'Fix session reattach stop button', at: t6.add(const Duration(seconds: 2))),
@@ -674,16 +698,60 @@ class MockSessionController extends SessionControllerBase {
   Future<void> sendQuickReply(String value) => sendText(value);
 
   @override
-  Future<void> loadImageAttachment(CustomMessage message) async {
+  Future<void> loadImageAttachment(CustomMessage message, {int? index}) async {
     final meta = message.metadata ?? const {};
-    if (meta['kind']?.toString() != 'codex_image') return;
-    final bytes = base64.decode(
+    final kind = meta['kind']?.toString();
+    if (kind != 'codex_image' && kind != 'codex_image_grid') return;
+
+    final bytes = await _readMockAppIconBytes();
+
+    if (kind == 'codex_image') {
+      final next = Map<String, Object?>.from(meta);
+      next['status'] = 'loaded';
+      next['bytes'] = bytes;
+      await chatController.updateMessage(message, message.copyWith(metadata: next));
+      return;
+    }
+
+    final raw = meta['images'];
+    if (raw is! List) return;
+    final items = raw.whereType<Map>().map((m) => Map<String, Object?>.from(m)).toList();
+    if (items.isEmpty) return;
+
+    final indices = <int>[];
+    if (index != null) {
+      if (index < 0 || index >= items.length) return;
+      indices.add(index);
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        indices.add(i);
+      }
+    }
+
+    for (final i in indices) {
+      final item = Map<String, Object?>.from(items[i]);
+      item['status'] = 'loaded';
+      item['bytes'] = bytes;
+      items[i] = item;
+    }
+
+    final next = Map<String, Object?>.from(meta);
+    next['images'] = items;
+    await chatController.updateMessage(message, message.copyWith(metadata: next));
+  }
+
+  Future<Uint8List> _readMockAppIconBytes() async {
+    const path = 'macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_512.png';
+    try {
+      final file = File(path);
+      if (await file.exists()) {
+        return Uint8List.fromList(await file.readAsBytes());
+      }
+    } catch (_) {}
+    final fallback = base64.decode(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO9l9WQAAAAASUVORK5CYII=',
     );
-    final next = Map<String, Object?>.from(meta);
-    next['status'] = 'loaded';
-    next['bytes'] = Uint8List.fromList(bytes);
-    await chatController.updateMessage(message, message.copyWith(metadata: next));
+    return Uint8List.fromList(fallback);
   }
 
   @override
