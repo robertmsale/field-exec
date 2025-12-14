@@ -12,5 +12,6 @@ abstract class ProjectsControllerBase extends GetxController {
 
   Future<Project?> promptAddProject();
   Future<void> addProject(Project project);
+  Future<void> updateProject(Project project);
   Future<void> deleteProject(Project project);
 }

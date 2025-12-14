@@ -15,6 +15,6 @@ field_exec_api = { path = "../../native/field_exec_api" }
 rinf = "8.8.1"
 tokio = { version = "1.45.0", features = ["rt", "sync", "time"] }
 async-ssh2-tokio = "0.12.1"
-russh = "0.55.0"
+russh = { version = "0.55.0", default-features = false, features = ["flate2", "ring", "rsa"] }
 ssh-key = { package = "internal-russh-forked-ssh-key", version = "0.6.11", default-features = true }
 rand_core = "0.6.4"

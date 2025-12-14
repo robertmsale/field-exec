@@ -2,6 +2,7 @@ import 'package:get/get.dart';
 
 import '../args/project_args.dart';
 import '../models/conversation.dart';
+import '../models/project.dart';
 import '../models/project_tab.dart';
 import 'session_controller_base.dart';
 
@@ -32,6 +33,13 @@ abstract class ProjectSessionsControllerBase extends GetxController {
 
   Future<List<Conversation>> loadConversations();
   Future<void> openConversation(Conversation conversation);
+
+  /// Projects that can be switched to from the current project page (typically
+  /// other projects in the same group).
+  Future<List<Project>> loadSwitchableProjects();
+
+  /// Navigates to another project (typically from [loadSwitchableProjects]).
+  Future<void> switchToProject(Project project);
 
   String runCommandHint();
   Future<RunCommandResult> runShellCommand(String command);

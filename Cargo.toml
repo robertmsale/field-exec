@@ -6,3 +6,6 @@
 [workspace]
 resolver = "3"
 members = ["native/*", "rust/*"]
+
+[patch.crates-io]
+async-ssh2-tokio = { path = "third_party/async-ssh2-tokio" }

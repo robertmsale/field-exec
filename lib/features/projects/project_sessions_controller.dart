@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 import '../../services/active_session_service.dart';
 import '../../services/conversation_store.dart';
 import '../../services/field_exec_session_store.dart';
+import '../../services/project_store.dart';
 import '../../services/project_tabs_store.dart';
 import '../../rinf/rust_ssh_service.dart';
 import '../session/session_controller.dart';
@@ -37,6 +38,7 @@ class ProjectSessionsController extends ProjectSessionsControllerBase {
   ProjectTabsStore get _tabsStore => Get.find<ProjectTabsStore>();
   ConversationStore get _conversations => Get.find<ConversationStore>();
   ActiveSessionService get _active => Get.find<ActiveSessionService>();
+  ProjectStore get _projects => Get.find<ProjectStore>();
 
   @override
   void onInit() {
@@ -530,6 +532,32 @@ done
       preview: conversation.preview,
     );
     await session.reattachIfNeeded(backfillLines: 200);
+  }
+
+  @override
+  Future<List<Project>> loadSwitchableProjects() async {
+    final group = args.project.group?.trim() ?? '';
+    if (group.isEmpty) return const [];
+
+    final all = await _projects.loadProjects(targetKey: args.target.targetKey);
+    final out = all
+        .where((p) => p.id != args.project.id)
+        .where((p) => (p.group?.trim() ?? '') == group)
+        .toList(growable: false);
+    out.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return out;
+  }
+
+  @override
+  Future<void> switchToProject(Project project) async {
+    await _projects.saveLastProjectId(
+      targetKey: args.target.targetKey,
+      projectId: project.id,
+    );
+    Get.offNamed(
+      DesignRoutes.project,
+      arguments: ProjectArgs(target: args.target, project: project),
+    );
   }
 
   @override

@@ -77,7 +77,10 @@ class ProjectsController extends ProjectsControllerBase {
                 final path = pathController.text.trim();
                 if (path.isEmpty) return;
                 final name = nameController.text.trim();
-                final fallback = path.split('/').where((p) => p.isNotEmpty).last;
+                final fallback = path
+                    .split('/')
+                    .where((p) => p.isNotEmpty)
+                    .last;
                 Get.back(
                   result: Project(
                     id: _uuid.v4(),
@@ -103,12 +106,30 @@ class ProjectsController extends ProjectsControllerBase {
     final next = [project, ...projects].take(25).toList(growable: false);
     projects.assignAll(next);
     await _store.saveProjects(targetKey: target.targetKey, projects: next);
-    await _store.saveLastProjectId(targetKey: target.targetKey, projectId: project.id);
+    await _store.saveLastProjectId(
+      targetKey: target.targetKey,
+      projectId: project.id,
+    );
+  }
+
+  @override
+  Future<void> updateProject(Project project) async {
+    final idx = projects.indexWhere((p) => p.id == project.id);
+    if (idx == -1) return;
+    final next = projects.toList(growable: true);
+    next[idx] = project;
+    projects.assignAll(next);
+    await _store.saveProjects(
+      targetKey: target.targetKey,
+      projects: next.toList(growable: false),
+    );
   }
 
   @override
   Future<void> deleteProject(Project project) async {
-    final next = projects.where((p) => p.id != project.id).toList(growable: false);
+    final next = projects
+        .where((p) => p.id != project.id)
+        .toList(growable: false);
     projects.assignAll(next);
     await _store.saveProjects(targetKey: target.targetKey, projects: next);
   }

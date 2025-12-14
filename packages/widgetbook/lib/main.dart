@@ -554,8 +554,18 @@ class MockProjectsController extends ProjectsControllerBase {
 
   @override
   final projects = <Project>[
-    const Project(id: '1', path: '/Users/me/repo-one', name: 'repo-one'),
-    const Project(id: '2', path: '/Users/me/repo-two', name: 'repo-two'),
+    const Project(
+      id: '1',
+      path: '/Users/me/repo-one',
+      name: 'repo-one',
+      group: 'Client A',
+    ),
+    const Project(
+      id: '2',
+      path: '/Users/me/repo-two',
+      name: 'repo-two',
+      group: 'Client A',
+    ),
   ].obs;
 
   @override
@@ -574,6 +584,13 @@ class MockProjectsController extends ProjectsControllerBase {
   @override
   Future<void> addProject(Project project) async {
     projects.insert(0, project);
+  }
+
+  @override
+  Future<void> updateProject(Project project) async {
+    final idx = projects.indexWhere((p) => p.id == project.id);
+    if (idx == -1) return;
+    projects[idx] = project;
   }
 
   @override
@@ -685,6 +702,28 @@ class MockProjectSessionsController extends ProjectSessionsControllerBase {
     await session.resumeThreadById(
       conversation.threadId,
       preview: conversation.preview,
+    );
+  }
+
+  @override
+  Future<List<Project>> loadSwitchableProjects() async {
+    final group = args.project.group?.trim() ?? '';
+    if (group.isEmpty) return const [];
+    return [
+      Project(
+        id: 'switch-1',
+        path: '/Users/me/switch-target',
+        name: 'switch-target',
+        group: group,
+      ),
+    ].where((p) => p.id != args.project.id).toList(growable: false);
+  }
+
+  @override
+  Future<void> switchToProject(Project project) async {
+    Get.offNamed(
+      DesignRoutes.project,
+      arguments: ProjectArgs(target: args.target, project: project),
     );
   }
 

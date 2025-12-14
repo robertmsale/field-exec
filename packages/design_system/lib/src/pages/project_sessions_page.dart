@@ -1,14 +1,19 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../controllers/project_sessions_controller_base.dart';
 import '../models/conversation.dart';
+import '../models/project.dart';
 import '../models/project_tab.dart';
 import '../session/codex_chat_view.dart';
 import '../session/codex_session_status_bar.dart';
 import '../git/git_tools_sheet.dart';
 import 'project_sessions_help_sheet.dart';
 import 'run_command_sheet.dart';
+
+enum _ProjectMenuAction { help, runCommand, resumeConversation, git, switchTo }
 
 class ProjectSessionsPage extends StatefulWidget {
   const ProjectSessionsPage({super.key});
@@ -23,6 +28,99 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
   TabController? _tabs;
   Worker? _tabsWorker;
   Worker? _activeWorker;
+
+  Future<void> _showHelp() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (_) => const ProjectSessionsHelpSheet(),
+    );
+  }
+
+  Future<void> _showRunCommand() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (_) => RunCommandSheet(
+        hintText: controller.runCommandHint(),
+        run: controller.runShellCommand,
+      ),
+    );
+  }
+
+  Future<void> _showGit() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => GitToolsSheet(
+        run: controller.runShellCommand,
+        projectPathLabel: controller.args.project.path,
+      ),
+    );
+  }
+
+  Future<void> _showResumeConversation() async {
+    final items = await controller.loadConversations();
+    if (!mounted) return;
+    await _showConversationPicker(items);
+  }
+
+  Future<void> _switchToProjectInGroup() async {
+    final candidates = await controller.loadSwitchableProjects();
+    if (!mounted) return;
+    if (candidates.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No other projects in this group.')),
+      );
+      return;
+    }
+
+    final picked = await showModalBottomSheet<Project>(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => SafeArea(
+        child: ListView.separated(
+          padding: const EdgeInsets.all(12),
+          itemCount: candidates.length,
+          separatorBuilder: (_, __) => const Divider(height: 1),
+          itemBuilder: (_, i) {
+            final p = candidates[i];
+            return ListTile(
+              title: Text(p.name),
+              subtitle: Text(p.path),
+              leading: const Icon(Icons.swap_horiz),
+              onTap: () => Navigator.of(context).pop(p),
+            );
+          },
+        ),
+      ),
+    );
+    if (picked == null) return;
+    await controller.switchToProject(picked);
+  }
+
+  Future<void> _handleMenu(_ProjectMenuAction action) async {
+    switch (action) {
+      case _ProjectMenuAction.help:
+        await _showHelp();
+        return;
+      case _ProjectMenuAction.runCommand:
+        await _showRunCommand();
+        return;
+      case _ProjectMenuAction.resumeConversation:
+        await _showResumeConversation();
+        return;
+      case _ProjectMenuAction.git:
+        await _showGit();
+        return;
+      case _ProjectMenuAction.switchTo:
+        await _switchToProjectInGroup();
+        return;
+    }
+  }
 
   Future<void> _showTabMenu({
     required ProjectTab tab,
@@ -163,56 +261,53 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
       appBar: AppBar(
         title: Text(controller.args.project.name),
         actions: [
-          IconButton(
-            tooltip: 'Help',
-            icon: const Icon(Icons.help_outline),
-            onPressed: () async {
-              await showModalBottomSheet<void>(
-                context: context,
-                showDragHandle: true,
-                isScrollControlled: true,
-                builder: (_) => const ProjectSessionsHelpSheet(),
-              );
-            },
-          ),
-          IconButton(
-            tooltip: 'Run command',
-            icon: const Icon(Icons.terminal),
-            onPressed: () async {
-              await showModalBottomSheet<void>(
-                context: context,
-                showDragHandle: true,
-                isScrollControlled: true,
-                builder: (_) => RunCommandSheet(
-                  hintText: controller.runCommandHint(),
-                  run: controller.runShellCommand,
+          PopupMenuButton<_ProjectMenuAction>(
+            tooltip: 'Project menu',
+            icon: const Icon(Icons.settings),
+            onSelected: (a) => unawaited(_handleMenu(a)),
+            itemBuilder: (_) => const [
+              PopupMenuItem<_ProjectMenuAction>(
+                value: _ProjectMenuAction.switchTo,
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(Icons.swap_horiz, size: 18),
+                  title: Text('Switch to…'),
                 ),
-              );
-            },
-          ),
-          IconButton(
-            tooltip: 'Resume conversation',
-            icon: const Icon(Icons.history),
-            onPressed: () async {
-              final items = await controller.loadConversations();
-              if (!mounted) return;
-              await _showConversationPicker(items);
-            },
-          ),
-          IconButton(
-            tooltip: 'Git',
-            icon: const Icon(Icons.difference),
-            onPressed: () async {
-              await showModalBottomSheet<void>(
-                context: context,
-                isScrollControlled: true,
-                showDragHandle: true,
-                builder: (_) => GitToolsSheet(
-                  run: controller.runShellCommand,
-                  projectPathLabel: controller.args.project.path,
+              ),
+              PopupMenuDivider(),
+              PopupMenuItem<_ProjectMenuAction>(
+                value: _ProjectMenuAction.git,
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(Icons.difference, size: 18),
+                  title: Text('Git'),
                 ),
-              );
-            },
+              ),
+              PopupMenuItem<_ProjectMenuAction>(
+                value: _ProjectMenuAction.runCommand,
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(Icons.terminal, size: 18),
+                  title: Text('Run command'),
+                ),
+              ),
+              PopupMenuItem<_ProjectMenuAction>(
+                value: _ProjectMenuAction.resumeConversation,
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(Icons.history, size: 18),
+                  title: Text('Resume conversation'),
+                ),
+              ),
+              PopupMenuItem<_ProjectMenuAction>(
+                value: _ProjectMenuAction.help,
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(Icons.help_outline, size: 18),
+                  title: Text('Help'),
+                ),
+              ),
+            ],
           ),
         ],
         bottom: PreferredSize(
