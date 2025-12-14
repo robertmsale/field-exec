@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -48,15 +49,11 @@ class _GitToolsSheetState extends State<GitToolsSheet>
     });
 
     try {
-      final worktrees = await _loadWorktrees();
-      final statuses = <_GitWorktreeStatus>[];
-      for (final wt in worktrees) {
-        statuses.add(await _loadWorktreeStatus(wt));
-      }
+      final statuses = await _loadWorktreeStatusesBatched();
       setState(() {
         _worktrees = statuses;
-        _worktreeRefs = worktrees
-            .map((w) => GitWorktreeRef(label: w.label, path: w.path))
+        _worktreeRefs = statuses
+            .map((w) => GitWorktreeRef(label: w.info.label, path: w.info.path))
             .toList(growable: false);
       });
     } catch (e) {
@@ -74,130 +71,165 @@ class _GitToolsSheetState extends State<GitToolsSheet>
     }
   }
 
-  Future<List<_GitWorktreeInfo>> _loadWorktrees() async {
-    final res = await widget.run('git worktree list --porcelain');
+  static String _b64Decode(String s) {
+    if (s.trim().isEmpty) return '';
+    return utf8.decode(base64.decode(s.trim()));
+  }
+
+  Future<List<_GitWorktreeStatus>> _loadWorktreeStatusesBatched() async {
+    const marker = 'FIELDEXEC_GIT_BATCH_V1';
+
+    final script =
+        '''
+$marker=1
+set -e
+
+b64() {
+  printf %s "\$1" | base64 | tr -d '\\n'
+}
+
+echo "#$marker"
+
+# Emit one line per worktree: path<TAB>head<TAB>branch<TAB>detachedFlag
+git worktree list --porcelain | awk 'BEGIN{RS="";FS="\\n"}{
+  path=""; head=""; branch=""; detached=0;
+  for (i=1;i<=NF;i++){
+    line=\$i;
+    if (index(line,"worktree ")==1) { path=substr(line,9); }
+    else if (index(line,"HEAD ")==1) { head=substr(line,6); }
+    else if (index(line,"branch ")==1) { branch=substr(line,8); }
+    else if (line=="detached") { detached=1; }
+  }
+  if (length(path)>0) {
+    printf "%s\\t%s\\t%s\\t%d\\n", path, head, branch, detached;
+  }
+}' | while IFS="\$(printf '\\t')" read -r wt_path wt_head wt_branch wt_detached; do
+  [ -n "\$wt_path" ] || continue
+
+  printf 'WT\\t%s\\t%s\\t%s\\t%s\\n' "\$(b64 "\$wt_path")" "\$(b64 "\$wt_head")" "\$(b64 "\$wt_branch")" "\$wt_detached"
+
+  git -C "\$wt_path" status --porcelain | while IFS= read -r line; do
+    [ -n "\$line" ] || continue
+    printf 'S\\t%s\\t%s\\n' "\$(b64 "\$wt_path")" "\$(b64 "\$line")"
+  done
+
+  (git -C "\$wt_path" --no-pager diff --numstat || true) | while IFS="\$(printf '\\t')" read -r adds dels file; do
+    [ -n "\$file" ] || continue
+    printf 'N\\t%s\\t0\\t%s\\t%s\\t%s\\n' "\$(b64 "\$wt_path")" "\$adds" "\$dels" "\$(b64 "\$file")"
+  done
+
+  (git -C "\$wt_path" --no-pager diff --cached --numstat || true) | while IFS="\$(printf '\\t')" read -r adds dels file; do
+    [ -n "\$file" ] || continue
+    printf 'N\\t%s\\t1\\t%s\\t%s\\t%s\\n' "\$(b64 "\$wt_path")" "\$adds" "\$dels" "\$(b64 "\$file")"
+  done
+done
+''';
+
+    final res = await widget.run(script);
     if (res.exitCode != 0) {
       final err = (res.stderr.trim().isEmpty ? res.stdout : res.stderr).trim();
-      throw Exception(err.isEmpty ? 'git worktree list failed.' : err);
+      throw Exception(err.isEmpty ? 'git batch query failed.' : err);
     }
 
-    final lines = res.stdout.split('\n');
-    final out = <_GitWorktreeInfo>[];
+    final worktreeOrder = <String>[];
+    final worktreeInfo = <String, _GitWorktreeInfo>{};
+    final statusLines = <String, List<String>>{};
+    final numstat = <String, Map<String, _GitNumstat>>{};
 
-    String? path;
-    String? head;
-    String? branch;
-    bool detached = false;
-
-    void flush() {
-      final p = path;
-      if (p == null || p.trim().isEmpty) return;
-      out.add(
-        _GitWorktreeInfo(
-          path: p.trim(),
-          head: (head ?? '').trim(),
-          branch: branch?.trim(),
-          detached: detached,
-        ),
-      );
-    }
-
-    for (final raw in lines) {
+    for (final raw in res.stdout.split('\n')) {
       final line = raw.trimRight();
-      if (line.isEmpty) {
-        flush();
-        path = null;
-        head = null;
-        branch = null;
-        detached = false;
+      if (line.isEmpty) continue;
+      if (line.startsWith('#')) continue;
+
+      final parts = line.split('\t');
+      if (parts.isEmpty) continue;
+      final tag = parts[0];
+
+      if (tag == 'WT') {
+        final path = parts.length >= 2 ? _b64Decode(parts[1]) : '';
+        final head = parts.length >= 3 ? _b64Decode(parts[2]) : '';
+        final branchRaw = parts.length >= 4 ? _b64Decode(parts[3]) : '';
+        final detached = (parts.length >= 5 ? parts[4].trim() : '') == '1';
+
+        if (path.trim().isEmpty) continue;
+        if (!worktreeInfo.containsKey(path)) {
+          worktreeOrder.add(path);
+        }
+        worktreeInfo[path] = _GitWorktreeInfo(
+          path: path,
+          head: head,
+          branch: branchRaw.trim().isEmpty ? null : branchRaw,
+          detached: detached,
+        );
         continue;
       }
-      if (line.startsWith('worktree ')) {
-        path = line.substring('worktree '.length);
+
+      if (tag == 'S') {
+        final path = parts.length >= 2 ? _b64Decode(parts[1]) : '';
+        final status = parts.length >= 3 ? _b64Decode(parts[2]) : '';
+        if (path.trim().isEmpty || status.trim().isEmpty) continue;
+        (statusLines[path] ??= <String>[]).add(status);
         continue;
       }
-      if (line.startsWith('HEAD ')) {
-        head = line.substring('HEAD '.length);
-        continue;
-      }
-      if (line.startsWith('branch ')) {
-        branch = line.substring('branch '.length);
-        continue;
-      }
-      if (line == 'detached') {
-        detached = true;
-        continue;
-      }
-    }
-    flush();
 
-    if (out.isEmpty) {
-      throw Exception('No git worktrees detected. Is this a git repo?');
-    }
-    return out;
-  }
+      if (tag == 'N') {
+        final path = parts.length >= 2 ? _b64Decode(parts[1]) : '';
+        final addsRaw = parts.length >= 4 ? parts[3].trim() : '';
+        final delsRaw = parts.length >= 5 ? parts[4].trim() : '';
+        final file = parts.length >= 6 ? _b64Decode(parts[5]) : '';
+        if (path.trim().isEmpty || file.trim().isEmpty) continue;
 
-  Future<_GitWorktreeStatus> _loadWorktreeStatus(_GitWorktreeInfo wt) async {
-    final statusRes = await widget.run('git -C ${_shQuote(wt.path)} status --porcelain');
-    if (statusRes.exitCode != 0) {
-      final err = (statusRes.stderr.trim().isEmpty ? statusRes.stdout : statusRes.stderr).trim();
-      throw Exception(err.isEmpty ? 'git status failed for ${wt.path}.' : err);
-    }
+        final adds = int.tryParse(addsRaw) ?? 0;
+        final dels = int.tryParse(delsRaw) ?? 0;
 
-    final files = statusRes.stdout
-        .split('\n')
-        .map((l) => l.trimRight())
-        .where((l) => l.isNotEmpty)
-        .map(_GitFileChange.parsePorcelainLine)
-        .whereType<_GitFileChange>()
-        .toList(growable: false);
-
-    final stats = await _loadNumstat(wt.path);
-
-    final enriched = files.map((f) {
-      final s = stats[f.path];
-      return f.copyWith(
-        additions: s?.additions ?? 0,
-        deletions: s?.deletions ?? 0,
-      );
-    }).toList(growable: false);
-
-    return _GitWorktreeStatus(
-      info: wt,
-      files: enriched,
-    );
-  }
-
-  Future<Map<String, _GitNumstat>> _loadNumstat(String worktreePath) async {
-    final combined = <String, _GitNumstat>{};
-
-    Future<void> merge(String cmd) async {
-      final res = await widget.run(cmd);
-      if (res.exitCode != 0) return;
-      for (final line in res.stdout.split('\n')) {
-        final parts = line.split('\t');
-        if (parts.length < 3) continue;
-        final adds = int.tryParse(parts[0]) ?? 0;
-        final dels = int.tryParse(parts[1]) ?? 0;
-        final path = parts.sublist(2).join('\t').trim();
-        if (path.isEmpty) continue;
-        final prev = combined[path];
-        combined[path] = _GitNumstat(
+        final byFile = numstat[path] ??= <String, _GitNumstat>{};
+        final prev = byFile[file];
+        byFile[file] = _GitNumstat(
           additions: (prev?.additions ?? 0) + adds,
           deletions: (prev?.deletions ?? 0) + dels,
         );
+        continue;
       }
     }
 
-    await merge('git -C ${_shQuote(worktreePath)} --no-pager diff --numstat');
-    await merge(
-      'git -C ${_shQuote(worktreePath)} --no-pager diff --cached --numstat',
-    );
+    if (worktreeOrder.isEmpty) {
+      throw Exception('No git worktrees detected. Is this a git repo?');
+    }
 
-    return combined;
+    final out = <_GitWorktreeStatus>[];
+    for (final path in worktreeOrder) {
+      final info = worktreeInfo[path];
+      if (info == null) continue;
+
+      final files = (statusLines[path] ?? const <String>[])
+          .map((l) => l.trimRight())
+          .where((l) => l.isNotEmpty)
+          .map(_GitFileChange.parsePorcelainLine)
+          .whereType<_GitFileChange>()
+          .toList(growable: false);
+
+      final stats = numstat[path] ?? const <String, _GitNumstat>{};
+      final enriched = files
+          .map((f) {
+            final s = stats[f.path];
+            return f.copyWith(
+              additions: s?.additions ?? 0,
+              deletions: s?.deletions ?? 0,
+            );
+          })
+          .toList(growable: false);
+
+      out.add(_GitWorktreeStatus(info: info, files: enriched));
+    }
+
+    return out;
   }
 
-  Future<void> _openFileDiff(BuildContext context, _GitWorktreeStatus wt, _GitFileChange file) async {
+  Future<void> _openFileDiff(
+    BuildContext context,
+    _GitWorktreeStatus wt,
+    _GitFileChange file,
+  ) async {
     final diff = await _loadFileDiff(worktreePath: wt.info.path, change: file);
     if (!context.mounted) return;
     await showModalBottomSheet<void>(
@@ -316,59 +348,57 @@ class _GitToolsSheetState extends State<GitToolsSheet>
               child: _loading
                   ? const Center(child: CircularProgressIndicator())
                   : _error != null
-                      ? _GitErrorState(
-                          message: _error!,
-                          onRetry: _refresh,
-                        )
-                      : _worktrees.isEmpty
-                          ? const _GitEmptyState()
-                          : DefaultTabController(
-                              length: _worktrees.length,
-                              child: Column(
-                                children: [
-                                  TabBar(
-                                    isScrollable: true,
-                                    tabs: [
-                                      for (final wt in _worktrees)
-                                        Tab(
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              Text(wt.tabLabel),
-                                              if (wt.isDirty)
-                                                Padding(
-                                                  padding:
-                                                      const EdgeInsets.only(left: 6),
-                                                  child: Icon(
-                                                    Icons.circle,
-                                                    size: 10,
-                                                    color: Theme.of(context)
-                                                        .colorScheme
-                                                        .tertiary,
-                                                  ),
-                                                ),
-                                            ],
+                  ? _GitErrorState(message: _error!, onRetry: _refresh)
+                  : _worktrees.isEmpty
+                  ? const _GitEmptyState()
+                  : DefaultTabController(
+                      length: _worktrees.length,
+                      child: Column(
+                        children: [
+                          TabBar(
+                            isScrollable: true,
+                            tabs: [
+                              for (final wt in _worktrees)
+                                Tab(
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(wt.tabLabel),
+                                      if (wt.isDirty)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            left: 6,
+                                          ),
+                                          child: Icon(
+                                            Icons.circle,
+                                            size: 10,
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.tertiary,
                                           ),
                                         ),
                                     ],
                                   ),
-                                  const SizedBox(height: 8),
-                                  Expanded(
-                                    child: TabBarView(
-                                      children: [
-                                        for (final wt in _worktrees)
-                                          _GitWorktreeTab(
-                                            worktree: wt,
-                                            run: widget.run,
-                                            onOpenFile: (f) =>
-                                                _openFileDiff(context, wt, f),
-                                          ),
-                                      ],
-                                    ),
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Expanded(
+                            child: TabBarView(
+                              children: [
+                                for (final wt in _worktrees)
+                                  _GitWorktreeTab(
+                                    worktree: wt,
+                                    run: widget.run,
+                                    onOpenFile: (f) =>
+                                        _openFileDiff(context, wt, f),
                                   ),
-                                ],
-                              ),
+                              ],
                             ),
+                          ),
+                        ],
+                      ),
+                    ),
             ),
           ],
         ),
@@ -408,7 +438,9 @@ class _GitWorktreeTab extends StatelessWidget {
                   itemBuilder: (context, index) {
                     final file = worktree.files[index];
                     final subtitle = [
-                      file.statusCode.trim().isEmpty ? '?' : file.statusCode.trim(),
+                      file.statusCode.trim().isEmpty
+                          ? '?'
+                          : file.statusCode.trim(),
                       if (file.additions > 0 || file.deletions > 0)
                         '+${file.additions} -${file.deletions}',
                     ].join(' • ');
@@ -493,7 +525,9 @@ class _WorktreeHeader extends StatelessWidget {
                 if (info.head.isNotEmpty)
                   Chip(
                     label: Text(
-                      info.head.length > 10 ? info.head.substring(0, 10) : info.head,
+                      info.head.length > 10
+                          ? info.head.substring(0, 10)
+                          : info.head,
                       style: TextStyle(color: cs.onSurfaceVariant),
                     ),
                   ),
@@ -514,7 +548,8 @@ class _WorktreeHeader extends StatelessWidget {
   }
 
   static String _prettyBranch(String raw) {
-    if (raw.startsWith('refs/heads/')) return raw.substring('refs/heads/'.length);
+    if (raw.startsWith('refs/heads/'))
+      return raw.substring('refs/heads/'.length);
     return raw;
   }
 }
@@ -571,12 +606,7 @@ class _GitEmptyState extends StatelessWidget {
   }
 }
 
-enum GitDiffView {
-  unstaged,
-  staged,
-  untracked,
-  all,
-}
+enum GitDiffView { unstaged, staged, untracked, all }
 
 class GitDiffSheet extends StatefulWidget {
   const GitDiffSheet({
@@ -715,7 +745,8 @@ class _GitDiffSheetState extends State<GitDiffSheet> {
       (sum, s) => sum + _countLines(s.diffText, '-'),
     );
 
-    final mono = Theme.of(context).textTheme.bodySmall?.copyWith(
+    final mono =
+        Theme.of(context).textTheme.bodySmall?.copyWith(
           fontFamily: 'RobotoMono',
           height: 1.25,
         ) ??
@@ -725,7 +756,9 @@ class _GitDiffSheetState extends State<GitDiffSheet> {
       child: SizedBox(
         height: height,
         child: Padding(
-          padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom,
+          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -745,16 +778,12 @@ class _GitDiffSheetState extends State<GitDiffSheet> {
                           const SizedBox(height: 4),
                           Text(
                             '${widget.worktreeLabel} • ${widget.statusCode}',
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodySmall
+                            style: Theme.of(context).textTheme.bodySmall
                                 ?.copyWith(color: cs.onSurfaceVariant),
                           ),
                           Text(
                             widget.worktreePath,
-                            style: Theme.of(context)
-                                .textTheme
-                                .labelSmall
+                            style: Theme.of(context).textTheme.labelSmall
                                 ?.copyWith(color: cs.onSurfaceVariant),
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -784,14 +813,16 @@ class _GitDiffSheetState extends State<GitDiffSheet> {
                           ButtonSegment(
                             value: GitDiffView.unstaged,
                             label: Text(
-                              widget.viewLabels?[GitDiffView.unstaged] ?? 'Unstaged',
+                              widget.viewLabels?[GitDiffView.unstaged] ??
+                                  'Unstaged',
                             ),
                           ),
                         if (widget.diff.staged.trim().isNotEmpty)
                           ButtonSegment(
                             value: GitDiffView.staged,
                             label: Text(
-                              widget.viewLabels?[GitDiffView.staged] ?? 'Staged',
+                              widget.viewLabels?[GitDiffView.staged] ??
+                                  'Staged',
                             ),
                           ),
                         if (widget.diff.untracked.trim().isNotEmpty)
@@ -816,17 +847,23 @@ class _GitDiffSheetState extends State<GitDiffSheet> {
                     const SizedBox(width: 8),
                     IconButton(
                       tooltip: 'Expand all',
-                      onPressed: hunks.isEmpty ? null : () => _setAllExpanded(true, hunks),
+                      onPressed: hunks.isEmpty
+                          ? null
+                          : () => _setAllExpanded(true, hunks),
                       icon: const Icon(Icons.unfold_more),
                     ),
                     IconButton(
                       tooltip: 'Collapse all',
-                      onPressed: hunks.isEmpty ? null : () => _setAllExpanded(false, hunks),
+                      onPressed: hunks.isEmpty
+                          ? null
+                          : () => _setAllExpanded(false, hunks),
                       icon: const Icon(Icons.unfold_less),
                     ),
                     IconButton(
                       tooltip: 'Jump to hunk',
-                      onPressed: hunks.isEmpty ? null : () => _pickAndScrollToHunk(hunks),
+                      onPressed: hunks.isEmpty
+                          ? null
+                          : () => _pickAndScrollToHunk(hunks),
                       icon: const Icon(Icons.list),
                     ),
                   ],
@@ -885,9 +922,9 @@ class _GitDiffSheetState extends State<GitDiffSheet> {
                             child: Card(
                               clipBehavior: Clip.antiAlias,
                               child: Theme(
-                                data: Theme.of(context).copyWith(
-                                      dividerColor: Colors.transparent,
-                                    ),
+                                data: Theme.of(
+                                  context,
+                                ).copyWith(dividerColor: Colors.transparent),
                                 child: ExpansionTile(
                                   initiallyExpanded: expanded,
                                   onExpansionChanged: (v) {
@@ -901,12 +938,15 @@ class _GitDiffSheetState extends State<GitDiffSheet> {
                                   },
                                   title: Text(
                                     title,
-                                    style: mono.copyWith(fontWeight: FontWeight.bold),
+                                    style: mono.copyWith(
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                   ),
                                   backgroundColor: cs.surfaceContainerLow,
-                                  collapsedBackgroundColor: cs.surfaceContainerHighest,
+                                  collapsedBackgroundColor:
+                                      cs.surfaceContainerHighest,
                                   childrenPadding: EdgeInsets.zero,
                                   children: [
                                     const Divider(height: 1),
@@ -1033,9 +1073,9 @@ class _StatChip extends StatelessWidget {
           Text(
             value,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: color,
-                  fontWeight: FontWeight.bold,
-                ),
+              color: color,
+              fontWeight: FontWeight.bold,
+            ),
           ),
         ],
       ),
@@ -1060,7 +1100,9 @@ class _GitWorktreeInfo {
   String get label {
     final b = branch;
     if (b != null && b.isNotEmpty) {
-      final pretty = b.startsWith('refs/heads/') ? b.substring('refs/heads/'.length) : b;
+      final pretty = b.startsWith('refs/heads/')
+          ? b.substring('refs/heads/'.length)
+          : b;
       return pretty;
     }
     final parts = path.split('/');
@@ -1072,10 +1114,7 @@ class _GitWorktreeStatus {
   final _GitWorktreeInfo info;
   final List<_GitFileChange> files;
 
-  const _GitWorktreeStatus({
-    required this.info,
-    required this.files,
-  });
+  const _GitWorktreeStatus({required this.info, required this.files});
 
   bool get isDirty => files.isNotEmpty;
 
@@ -1108,10 +1147,7 @@ class _GitFileChange {
     required this.deletions,
   });
 
-  _GitFileChange copyWith({
-    int? additions,
-    int? deletions,
-  }) {
+  _GitFileChange copyWith({int? additions, int? deletions}) {
     return _GitFileChange(
       statusCode: statusCode,
       path: path,
@@ -1194,11 +1230,7 @@ class _GitDiffHunk {
       // No @@ hunks found; keep a single "Diff" section for binary/other formats.
       final only = hunks.first;
       return [
-        _GitDiffHunk(
-          header: 'Diff',
-          lines: only.lines,
-          stats: only.stats,
-        ),
+        _GitDiffHunk(header: 'Diff', lines: only.lines, stats: only.stats),
       ];
     }
     return hunks;

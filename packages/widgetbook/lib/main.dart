@@ -274,6 +274,20 @@ const _demoProjectArgs = ProjectArgs(
 
 Future<RunCommandResult> _mockGitRunCommand(String command) async {
   final cmd = command.trim();
+  if (cmd.contains('FIELDEXEC_GIT_BATCH_V1')) {
+    return const RunCommandResult(
+      exitCode: 0,
+      stdout:
+          '#FIELDEXEC_GIT_BATCH_V1\n'
+          'WT\tL1VzZXJzL21lL2RlbW8tcmVwbw==\tZGVhZGJlZWZkZWFkYmVlZg==\tcmVmcy9oZWFkcy9tYWlu\t0\n'
+          'S\tL1VzZXJzL21lL2RlbW8tcmVwbw==\tIE0gbGliL21haW4uZGFydA==\n'
+          'S\tL1VzZXJzL21lL2RlbW8tcmVwbw==\tPz8gbm90ZXMudHh0\n'
+          'N\tL1VzZXJzL21lL2RlbW8tcmVwbw==\t0\t3\t1\tbGliL21haW4uZGFydA==\n'
+          'N\tL1VzZXJzL21lL2RlbW8tcmVwbw==\t0\t1\t0\tbm90ZXMudHh0\n'
+          'WT\tL1VzZXJzL21lL2RlbW8tcmVwby13dA==\tY2FmZWJhYmVjYWZlYmFiZQ==\tcmVmcy9oZWFkcy9mZWF0dXJlLXg=\t0\n',
+      stderr: '',
+    );
+  }
   if (cmd == 'git worktree list --porcelain') {
     return const RunCommandResult(
       exitCode: 0,
@@ -286,7 +300,8 @@ Future<RunCommandResult> _mockGitRunCommand(String command) async {
   if (cmd.contains('--no-pager log --oneline')) {
     return const RunCommandResult(
       exitCode: 0,
-      stdout: 'aaaa111 Fix: something (HEAD -> main)\nbbbb222 Add: thing\ncccc333 Init\n',
+      stdout:
+          'aaaa111 Fix: something (HEAD -> main)\nbbbb222 Add: thing\ncccc333 Init\n',
       stderr: '',
     );
   }
@@ -329,7 +344,11 @@ Future<RunCommandResult> _mockGitRunCommand(String command) async {
         stderr: '',
       );
     }
-    return const RunCommandResult(exitCode: 0, stdout: '3\t1\tlib/main.dart\n', stderr: '');
+    return const RunCommandResult(
+      exitCode: 0,
+      stdout: '3\t1\tlib/main.dart\n',
+      stderr: '',
+    );
   }
 
   if (cmd.contains('--no-pager diff --name-status')) {
@@ -354,7 +373,8 @@ Future<RunCommandResult> _mockGitRunCommand(String command) async {
   if (cmd.contains('--no-pager diff --no-index')) {
     return const RunCommandResult(
       exitCode: 1,
-      stdout: 'diff --git a/notes.txt b/notes.txt\nnew file mode 100644\nindex 0000000..e69de29\n--- /dev/null\n+++ b/notes.txt\n@@\n+hello\n',
+      stdout:
+          'diff --git a/notes.txt b/notes.txt\nnew file mode 100644\nindex 0000000..e69de29\n--- /dev/null\n+++ b/notes.txt\n@@\n+hello\n',
       stderr: '',
     );
   }
@@ -362,7 +382,8 @@ Future<RunCommandResult> _mockGitRunCommand(String command) async {
   if (cmd.contains('--no-pager diff -- ')) {
     return const RunCommandResult(
       exitCode: 0,
-      stdout: 'diff --git a/lib/main.dart b/lib/main.dart\nindex 1111111..2222222 100644\n--- a/lib/main.dart\n+++ b/lib/main.dart\n@@ -1,2 +1,2 @@\n-print(\"hi\")\n+print(\"hello\")\n',
+      stdout:
+          'diff --git a/lib/main.dart b/lib/main.dart\nindex 1111111..2222222 100644\n--- a/lib/main.dart\n+++ b/lib/main.dart\n@@ -1,2 +1,2 @@\n-print("hi")\n+print("hello")\n',
       stderr: '',
     );
   }
