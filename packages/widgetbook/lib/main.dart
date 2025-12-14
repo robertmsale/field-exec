@@ -480,13 +480,23 @@ class MockConnectionController extends ConnectionControllerBase {
   @override
   final useLocalRunner = true.obs;
   @override
+  final remoteShell = PosixShell.sh.obs;
+  @override
   final isBusy = false.obs;
   @override
   final status = ''.obs;
   @override
   final recentProfiles = <ConnectionProfile>[
-    ConnectionProfile(userAtHost: 'robert@mac.local', port: 22),
-    ConnectionProfile(userAtHost: 'ci@macmini.local', port: 2222),
+    ConnectionProfile(
+      userAtHost: 'robert@mac.local',
+      port: 22,
+      shell: PosixShell.sh,
+    ),
+    ConnectionProfile(
+      userAtHost: 'ci@macmini.local',
+      port: 2222,
+      shell: PosixShell.zsh,
+    ),
   ].obs;
 
   @override
@@ -526,7 +536,11 @@ class MockConnectionController extends ConnectionControllerBase {
     Get.toNamed(
       DesignRoutes.projects,
       arguments: TargetArgs.remote(
-        ConnectionProfile(userAtHost: userAtHost, port: port),
+        ConnectionProfile(
+          userAtHost: userAtHost,
+          port: port,
+          shell: remoteShell.value,
+        ),
       ),
     );
   }

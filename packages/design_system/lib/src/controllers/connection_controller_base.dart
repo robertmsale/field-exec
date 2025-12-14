@@ -12,6 +12,7 @@ abstract class ConnectionControllerBase extends GetxController {
   TextEditingController get privateKeyPassphraseController;
 
   RxBool get useLocalRunner;
+  Rx<PosixShell> get remoteShell;
 
   RxBool get isBusy;
   RxString get status;
@@ -24,4 +25,3 @@ abstract class ConnectionControllerBase extends GetxController {
   Future<void> runLocalCodex();
   Future<void> testSshConnection();
 }
-

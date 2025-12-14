@@ -439,7 +439,7 @@ class SessionController extends SessionControllerBase {
         username: profile.username,
         privateKeyPem: pem,
         password: _sshPassword,
-        command: 'sh -c ${_shQuote(cmdBody)}',
+        command: _wrapWithShell(profile, cmdBody),
       );
     } catch (_) {
       if (_sshPassword == null) {
@@ -452,7 +452,7 @@ class SessionController extends SessionControllerBase {
           username: profile.username,
           privateKeyPem: pem,
           password: _sshPassword,
-          command: 'sh -c ${_shQuote(cmdBody)}',
+          command: _wrapWithShell(profile, cmdBody),
         );
       } else {
         rethrow;
@@ -823,7 +823,7 @@ class SessionController extends SessionControllerBase {
 
     final cmd =
         'mkdir -p ${_shQuote(sessionsAbs)} ${_shQuote(tmpAbs)} && touch ${_shQuote(logAbs)} ${_shQuote(errAbs)} ${_shQuote(jobAbs)} ${_shQuote(pidAbs)}';
-    await run('sh -c ${_shQuote(cmd)}');
+    await run(_wrapWithShell(profile, cmd));
   }
 
   void _cancelTailOnly() {
@@ -1107,7 +1107,7 @@ class SessionController extends SessionControllerBase {
       username: profile.username,
       privateKeyPem: pem,
       password: _sshPassword,
-      command: 'sh -c ${_shQuote(cmd)}',
+      command: _wrapWithShell(profile, cmd),
     );
   }
 
@@ -1133,7 +1133,7 @@ class SessionController extends SessionControllerBase {
         username: profile.username,
         privateKeyPem: pem,
         password: _sshPassword,
-        command: 'sh -c ${_shQuote(cmd)}',
+        command: _wrapWithShell(profile, cmd),
       );
     } catch (_) {
       if (_sshPassword == null) {
@@ -1146,7 +1146,7 @@ class SessionController extends SessionControllerBase {
           username: profile.username,
           privateKeyPem: pem,
           password: _sshPassword,
-          command: 'sh -c ${_shQuote(cmd)}',
+          command: _wrapWithShell(profile, cmd),
         );
         return;
       }
@@ -1316,7 +1316,7 @@ class SessionController extends SessionControllerBase {
         '  printf %s\\\\n "FIELD_EXEC_JOB=pid:\$pid"',
         'fi',
       ].join('\n');
-      final startCmd = 'sh -c ${_shQuote(startBody)}';
+      final startCmd = _wrapWithShell(profile, startBody);
 
       final launchProc = await _ssh.startCommand(
         host: profile.host,
@@ -1361,8 +1361,10 @@ class SessionController extends SessionControllerBase {
             username: profile.username,
             privateKeyPem: pem,
             password: _sshPassword,
-            command:
-                'sh -c ${_shQuote('if [ -f ${_shQuote(jobAbs)} ]; then cat ${_shQuote(jobAbs)}; fi')}',
+            command: _wrapWithShell(
+              profile,
+              'if [ -f ${_shQuote(jobAbs)} ]; then cat ${_shQuote(jobAbs)}; fi',
+            ),
           );
           final fromFile = readJob.stdout.trim();
           if (fromFile.isNotEmpty) remoteJobId = fromFile;
@@ -1465,7 +1467,7 @@ class SessionController extends SessionControllerBase {
 
     final script =
         'if [ -f ${_shQuote(absPath)} ]; then wc -l ${_shQuote(absPath)} 2>/dev/null | sed \'s/^[[:space:]]*\\\\([0-9][0-9]*\\\\).*/\\\\1/\'; else echo 0; fi';
-    final res = await run('sh -c ${_shQuote(script)}');
+    final res = await run(_wrapWithShell(profile, script));
     return _parseWcLineCount(res.stdout);
   }
 
@@ -1547,8 +1549,10 @@ class SessionController extends SessionControllerBase {
       _logLineCursor = startLine - 1;
     }
 
-    final cmd =
-        'sh -c ${_shQuote('tail -n +$startLine -F ${_shQuote(logAbs)}')}';
+    final cmd = _wrapWithShell(
+      profile,
+      'tail -n +$startLine -F ${_shQuote(logAbs)}',
+    );
     final proc = await startProc(cmd);
     final token = Object();
     _tailToken = token;
@@ -1651,7 +1655,7 @@ class SessionController extends SessionControllerBase {
       username: profile.username,
       privateKeyPem: pem,
       password: _sshPassword,
-      command: 'sh -c ${_shQuote(checkCmd)}',
+      command: _wrapWithShell(profile, checkCmd),
     );
 
     if ((check.exitCode ?? 1) == 0 || (check.exitCode ?? 1) == 127) {
@@ -1860,7 +1864,7 @@ class SessionController extends SessionControllerBase {
       username: profile.username,
       privateKeyPem: pem,
       password: _sshPassword,
-      command: 'sh -c ${_shQuote(cmd)}',
+      command: _wrapWithShell(profile, cmd),
     );
 
     await _sessionStore.clearRemoteJobId(
@@ -1950,7 +1954,7 @@ class SessionController extends SessionControllerBase {
         username: profile.username,
         privateKeyPem: pem,
         password: _sshPassword,
-        command: 'sh -c ${_shQuote(checkCmd)}',
+        command: _wrapWithShell(profile, checkCmd),
       );
 
       if ((check.exitCode ?? 1) == 0 || (check.exitCode ?? 1) == 127) {
@@ -1994,8 +1998,10 @@ class SessionController extends SessionControllerBase {
     if (pem == null || pem.trim().isEmpty) return null;
 
     final jobAbs = _remoteAbsPath(_jobRelPath);
-    final cmd =
-        'sh -c ${_shQuote('if [ -f ${_shQuote(jobAbs)} ]; then head -n 1 ${_shQuote(jobAbs)}; fi')}';
+    final cmd = _wrapWithShell(
+      profile,
+      'if [ -f ${_shQuote(jobAbs)} ]; then head -n 1 ${_shQuote(jobAbs)}; fi',
+    );
 
     Future<SshCommandResult> runOnce({String? password}) {
       return _ssh.runCommandWithResult(
@@ -2064,8 +2070,10 @@ class SessionController extends SessionControllerBase {
       }
 
       final logAbs = _remoteAbsPath(_logRelPath);
-      final cmd =
-          'sh -c ${_shQuote('if [ -f ${_shQuote(logAbs)} ]; then tail -n $maxLines ${_shQuote(logAbs)}; fi')}';
+      final cmd = _wrapWithShell(
+        profile,
+        'if [ -f ${_shQuote(logAbs)} ]; then tail -n $maxLines ${_shQuote(logAbs)}; fi',
+      );
 
       final res = await run(cmd);
 
@@ -2117,8 +2125,10 @@ class SessionController extends SessionControllerBase {
     final pattern = _shQuote(
       '"type":"$_clientGitCommitType","status":"(completed|skipped|failed)".*"source_item_id":"$sourceItemId"',
     );
-    final cmd =
-        'sh -c ${_shQuote('grep -qE $pattern ${_shQuote(logAbs)} 2>/dev/null')}';
+    final cmd = _wrapWithShell(
+      profile,
+      'grep -qE $pattern ${_shQuote(logAbs)} 2>/dev/null',
+    );
     try {
       final res = await _ssh.runCommandWithResult(
         host: profile.host,
@@ -2326,8 +2336,10 @@ class SessionController extends SessionControllerBase {
     }
 
     final logAbs = _remoteAbsPath(logRelPath);
-    final cmd =
-        'sh -c ${_shQuote('if [ -f ${_shQuote(logAbs)} ]; then tail -n $maxLines ${_shQuote(logAbs)}; fi')}';
+    final cmd = _wrapWithShell(
+      profile,
+      'if [ -f ${_shQuote(logAbs)} ]; then tail -n $maxLines ${_shQuote(logAbs)}; fi',
+    );
 
     final res = await run(cmd);
     final lines = const LineSplitter().convert(res.stdout);
@@ -2501,7 +2513,7 @@ class SessionController extends SessionControllerBase {
         username: profile.username,
         privateKeyPem: pem,
         password: password,
-        command: 'sh -c ${_shQuote(findCmd)}',
+        command: _wrapWithShell(profile, findCmd),
       );
     }
 
@@ -3156,6 +3168,19 @@ class SessionController extends SessionControllerBase {
   }
 
   static String _shQuote(String s) => "'${s.replaceAll("'", "'\\''")}'";
+
+  static String _wrapWithShell(ConnectionProfile profile, String body) {
+    switch (profile.shell) {
+      case PosixShell.sh:
+        return 'sh -c ${_shQuote(body)}';
+      case PosixShell.bash:
+        return 'bash --noprofile --norc -c ${_shQuote(body)}';
+      case PosixShell.zsh:
+        return 'zsh -f -c ${_shQuote(body)}';
+      case PosixShell.fizsh:
+        return 'fizsh -f -c ${_shQuote(body)}';
+    }
+  }
 
   Future<void> _ensureFieldExecExcludedLocal() async {
     final gitDir = Directory(_joinPosix(projectPath, '.git'));

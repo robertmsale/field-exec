@@ -230,9 +230,7 @@ class ProjectSessionsController extends ProjectSessionsControllerBase {
     }
     if (!Platform.isMacOS) return const [];
 
-    final sessionsDir = Directory(
-      '${args.project.path}/.field_exec/sessions',
-    );
+    final sessionsDir = Directory('${args.project.path}/.field_exec/sessions');
     if (!await sessionsDir.exists()) return const [];
 
     final entries = await sessionsDir.list(followLinks: false).toList();
@@ -555,6 +553,19 @@ done
 
   static String _shQuote(String s) => "'${s.replaceAll("'", "'\\''")}'";
 
+  static String _wrapWithShell(PosixShell shell, String body) {
+    switch (shell) {
+      case PosixShell.sh:
+        return 'sh -c ${_shQuote(body)}';
+      case PosixShell.bash:
+        return 'bash --noprofile --norc -c ${_shQuote(body)}';
+      case PosixShell.zsh:
+        return 'zsh -f -c ${_shQuote(body)}';
+      case PosixShell.fizsh:
+        return 'fizsh -f -c ${_shQuote(body)}';
+    }
+  }
+
   @override
   Future<RunCommandResult> runShellCommand(String command) async {
     final cmd = command.trim();
@@ -598,7 +609,7 @@ done
         host: profile.host,
         port: profile.port,
         username: profile.username,
-        command: 'sh -c ${_shQuote(remoteCmd)}',
+        command: _wrapWithShell(profile.shell, remoteCmd),
         connectTimeout: const Duration(seconds: 10),
         commandTimeout: timeout,
         passwordProvider: () async {

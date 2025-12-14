@@ -4,10 +4,18 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../controllers/connection_controller_base.dart';
+import '../models/connection_profile.dart';
 import '../routes/design_routes.dart';
 
 class ConnectionPage extends GetView<ConnectionControllerBase> {
   const ConnectionPage({super.key});
+
+  static const _shellOptions = <PosixShell>[
+    PosixShell.sh,
+    PosixShell.bash,
+    PosixShell.zsh,
+    PosixShell.fizsh,
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -67,6 +75,25 @@ class ConnectionPage extends GetView<ConnectionControllerBase> {
                     decoration: const InputDecoration(labelText: 'Port'),
                   ),
                   const SizedBox(height: 12),
+                  Obx(
+                    () => DropdownButtonFormField<PosixShell>(
+                      value: controller.remoteShell.value,
+                      items: [
+                        for (final s in _shellOptions)
+                          DropdownMenuItem(value: s, child: Text(s.label)),
+                      ],
+                      onChanged: (v) {
+                        if (v == null) return;
+                        controller.remoteShell.value = v;
+                      },
+                      decoration: const InputDecoration(
+                        labelText: 'Remote shell',
+                        helperText:
+                            'Used to run non-interactive commands (no profiles/rc files).',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
                   TextField(
                     controller: controller.privateKeyPassphraseController,
                     obscureText: true,
@@ -90,7 +117,8 @@ class ConnectionPage extends GetView<ConnectionControllerBase> {
                     children: [
                       Expanded(
                         child: OutlinedButton(
-                          onPressed: () => controller.savePrivateKeyToKeychain(),
+                          onPressed: () =>
+                              controller.savePrivateKeyToKeychain(),
                           child: const Text('Save Key to Keychain'),
                         ),
                       ),
@@ -112,10 +140,11 @@ class ConnectionPage extends GetView<ConnectionControllerBase> {
                     (p) => ListTile(
                       contentPadding: EdgeInsets.zero,
                       title: Text(p.userAtHost),
-                      subtitle: Text('Port ${p.port}'),
+                      subtitle: Text('Port ${p.port} • ${p.shell.name}'),
                       onTap: () {
                         controller.userAtHostController.text = p.userAtHost;
                         controller.portController.text = p.port.toString();
+                        controller.remoteShell.value = p.shell;
                       },
                     ),
                   ),
@@ -138,8 +167,8 @@ class ConnectionPage extends GetView<ConnectionControllerBase> {
                   controller.isBusy.value
                       ? 'Working...'
                       : (controller.useLocalRunner.value
-                          ? 'Connect Locally'
-                          : 'Connect'),
+                            ? 'Connect Locally'
+                            : 'Connect'),
                 ),
               ),
             ),

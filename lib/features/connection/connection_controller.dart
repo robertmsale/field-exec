@@ -22,6 +22,9 @@ class ConnectionController extends ConnectionControllerBase {
   final useLocalRunner = (Platform.isMacOS).obs;
 
   @override
+  final remoteShell = PosixShell.sh.obs;
+
+  @override
   final isBusy = false.obs;
   @override
   final status = ''.obs;
@@ -56,11 +59,14 @@ class ConnectionController extends ConnectionControllerBase {
     if (last != null && last.userAtHost.isNotEmpty) {
       userAtHostController.text = last.userAtHost;
       portController.text = last.port.toString();
+      remoteShell.value = last.shell;
     }
   }
 
   Future<void> _loadKeyFromKeychain() async {
-    final pem = await _storage.read(key: SecureStorageService.sshPrivateKeyPemKey);
+    final pem = await _storage.read(
+      key: SecureStorageService.sshPrivateKeyPemKey,
+    );
     if (pem != null && pem.isNotEmpty) {
       privateKeyPemController.text = pem;
     }
@@ -76,7 +82,10 @@ class ConnectionController extends ConnectionControllerBase {
       status.value = 'Private key PEM is empty.';
       return;
     }
-    await _storage.write(key: SecureStorageService.sshPrivateKeyPemKey, value: pem);
+    await _storage.write(
+      key: SecureStorageService.sshPrivateKeyPemKey,
+      value: pem,
+    );
     status.value = 'Saved private key PEM to Keychain.';
   }
 
@@ -114,7 +123,26 @@ class ConnectionController extends ConnectionControllerBase {
     final parts = userAtHost.split('@');
     if (parts.length != 2 || parts[0].isEmpty || parts[1].isEmpty) return null;
 
-    return ConnectionProfile(userAtHost: userAtHost, port: port);
+    return ConnectionProfile(
+      userAtHost: userAtHost,
+      port: port,
+      shell: remoteShell.value,
+    );
+  }
+
+  static String _shQuote(String s) => "'${s.replaceAll("'", "'\\''")}'";
+
+  static String _wrapWithShell(PosixShell shell, String body) {
+    switch (shell) {
+      case PosixShell.sh:
+        return 'sh -c ${_shQuote(body)}';
+      case PosixShell.bash:
+        return 'bash --noprofile --norc -c ${_shQuote(body)}';
+      case PosixShell.zsh:
+        return 'zsh -f -c ${_shQuote(body)}';
+      case PosixShell.fizsh:
+        return 'fizsh -f -c ${_shQuote(body)}';
+    }
   }
 
   @override
@@ -148,11 +176,13 @@ class ConnectionController extends ConnectionControllerBase {
         host: host,
         port: port,
         username: username,
-        command: 'whoami',
-        privateKeyPemOverride:
-            privateKeyPemOverride.isEmpty ? null : privateKeyPemOverride,
-        privateKeyPassphrase:
-            privateKeyPassphrase.isEmpty ? null : privateKeyPassphrase,
+        command: _wrapWithShell(profile.shell, 'whoami'),
+        privateKeyPemOverride: privateKeyPemOverride.isEmpty
+            ? null
+            : privateKeyPemOverride,
+        privateKeyPassphrase: privateKeyPassphrase.isEmpty
+            ? null
+            : privateKeyPassphrase,
         connectTimeout: const Duration(seconds: 10),
         commandTimeout: const Duration(seconds: 10),
         passwordProvider: () async {
@@ -172,10 +202,13 @@ class ConnectionController extends ConnectionControllerBase {
           .where((p) => p.userAtHost == profile.userAtHost && p.port == port)
           .toList();
       final next = <ConnectionProfile>[profile, ...recentProfiles]
-          .where((p) =>
-              p.userAtHost.isNotEmpty &&
-              !existing.any((e) =>
-                  e.userAtHost == p.userAtHost && e.port == p.port))
+          .where(
+            (p) =>
+                p.userAtHost.isNotEmpty &&
+                !existing.any(
+                  (e) => e.userAtHost == p.userAtHost && e.port == p.port,
+                ),
+          )
           .take(10)
           .toList();
       recentProfiles.assignAll(next);
