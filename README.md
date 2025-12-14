@@ -50,6 +50,12 @@ Install dependencies:
 flutter pub get
 ```
 
+Install the Rinf CLI (required for `rinf gen` and the pre-commit hook):
+
+```bash
+cargo install rinf_cli
+```
+
 Install git hooks (runs `rinf gen` on commit):
 
 ```bash

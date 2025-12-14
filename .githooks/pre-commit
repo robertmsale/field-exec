@@ -22,11 +22,8 @@ if ! grep -Eq '^[[:space:]]*rinf:' pubspec.yaml; then
 fi
 
 echo "[pre-commit] rinf gen"
-if command -v dart >/dev/null 2>&1; then
-  dart run rinf gen
-elif command -v flutter >/dev/null 2>&1; then
-  flutter pub run rinf gen
+if command -v rinf >/dev/null 2>&1; then
+  rinf gen
 else
-  echo "[pre-commit] Skipping: neither 'dart' nor 'flutter' found in PATH." >&2
+  echo "[pre-commit] Skipping: 'rinf' not found in PATH (install with: cargo install rinf_cli)." >&2
 fi
-
