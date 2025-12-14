@@ -274,17 +274,17 @@ const _demoProjectArgs = ProjectArgs(
 
 Future<RunCommandResult> _mockGitRunCommand(String command) async {
   final cmd = command.trim();
-  if (cmd.contains('FIELDEXEC_GIT_BATCH_V1')) {
+  if (cmd.contains('FIELDEXEC_GIT_BATCH_V2')) {
     return const RunCommandResult(
       exitCode: 0,
       stdout:
-          '#FIELDEXEC_GIT_BATCH_V1\n'
-          'WT\tL1VzZXJzL21lL2RlbW8tcmVwbw==\tZGVhZGJlZWZkZWFkYmVlZg==\tcmVmcy9oZWFkcy9tYWlu\t0\n'
+          '#FIELDEXEC_GIT_BATCH_V2\n'
+          'WT\tL1VzZXJzL21lL2RlbW8tcmVwbw==\tZGVhZGJlZWZkZWFkYmVlZg==\tcmVmcy9oZWFkcy9tYWlu\t0\t1\n'
           'S\tL1VzZXJzL21lL2RlbW8tcmVwbw==\tIE0gbGliL21haW4uZGFydA==\n'
           'S\tL1VzZXJzL21lL2RlbW8tcmVwbw==\tPz8gbm90ZXMudHh0\n'
           'N\tL1VzZXJzL21lL2RlbW8tcmVwbw==\t0\t3\t1\tbGliL21haW4uZGFydA==\n'
           'N\tL1VzZXJzL21lL2RlbW8tcmVwbw==\t0\t1\t0\tbm90ZXMudHh0\n'
-          'WT\tL1VzZXJzL21lL2RlbW8tcmVwby13dA==\tY2FmZWJhYmVjYWZlYmFiZQ==\tcmVmcy9oZWFkcy9mZWF0dXJlLXg=\t0\n',
+          'WT\tL1VzZXJzL21lL2RlbW8tcmVwby13dA==\tY2FmZWJhYmVjYWZlYmFiZQ==\tcmVmcy9oZWFkcy9mZWF0dXJlLXg=\t0\t0\n',
       stderr: '',
     );
   }
@@ -644,6 +644,15 @@ class MockProjectSessionsController extends ProjectSessionsControllerBase {
     } else if (activeIndex.value >= tabs.length) {
       activeIndex.value = tabs.length - 1;
     }
+  }
+
+  @override
+  Future<void> renameTab(ProjectTab tab, String title) async {
+    final nextTitle = title.trim();
+    if (nextTitle.isEmpty) return;
+    final idx = tabs.indexWhere((t) => t.id == tab.id);
+    if (idx == -1) return;
+    tabs[idx] = ProjectTab(id: tab.id, title: nextTitle);
   }
 
   @override

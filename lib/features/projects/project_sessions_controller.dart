@@ -201,6 +201,23 @@ class ProjectSessionsController extends ProjectSessionsControllerBase {
   }
 
   @override
+  Future<void> renameTab(ProjectTab tab, String title) async {
+    final nextTitle = title.trim();
+    if (nextTitle.isEmpty) return;
+
+    final idx = tabs.indexWhere((t) => t.id == tab.id);
+    if (idx == -1) return;
+
+    tabs[idx] = ProjectTab(id: tab.id, title: nextTitle);
+
+    await _tabsStore.saveTabs(
+      targetKey: args.target.targetKey,
+      projectPath: args.project.path,
+      tabs: tabs.toList(growable: false),
+    );
+  }
+
+  @override
   Future<List<Conversation>> loadConversations() async {
     final stored = await _conversations.load(
       targetKey: args.target.targetKey,

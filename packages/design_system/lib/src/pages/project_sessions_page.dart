@@ -24,6 +24,75 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
   Worker? _tabsWorker;
   Worker? _activeWorker;
 
+  Future<void> _showTabMenu({
+    required ProjectTab tab,
+    required Offset globalPosition,
+  }) async {
+    final overlay = Overlay.of(context).context.findRenderObject();
+    final box = overlay is RenderBox ? overlay : null;
+    final size = box?.size ?? MediaQuery.of(context).size;
+
+    final picked = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        globalPosition.dx,
+        globalPosition.dy,
+        size.width - globalPosition.dx,
+        size.height - globalPosition.dy,
+      ),
+      items: const [
+        PopupMenuItem<String>(
+          value: 'rename',
+          child: ListTile(
+            dense: true,
+            leading: Icon(Icons.edit, size: 18),
+            title: Text('Rename tab'),
+          ),
+        ),
+      ],
+    );
+    if (!mounted) return;
+    if (picked != 'rename') return;
+
+    final title = await _promptRenameTab(tab);
+    if (!mounted) return;
+    if (title == null) return;
+    await controller.renameTab(tab, title);
+  }
+
+  Future<String?> _promptRenameTab(ProjectTab tab) async {
+    final text = TextEditingController(text: tab.title);
+    try {
+      return showDialog<String>(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: const Text('Rename tab'),
+            content: TextField(
+              controller: text,
+              autofocus: true,
+              textInputAction: TextInputAction.done,
+              decoration: const InputDecoration(labelText: 'Tab name'),
+              onSubmitted: (v) => Navigator.of(context).pop(v),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(text.text),
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
+      );
+    } finally {
+      text.dispose();
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -163,7 +232,18 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Text(t.title),
+                              GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onSecondaryTapDown: (d) => _showTabMenu(
+                                  tab: t,
+                                  globalPosition: d.globalPosition,
+                                ),
+                                onLongPressStart: (d) => _showTabMenu(
+                                  tab: t,
+                                  globalPosition: d.globalPosition,
+                                ),
+                                child: Text(t.title),
+                              ),
                               const SizedBox(width: 8),
                               GestureDetector(
                                 onTap: () => controller.closeTab(t),

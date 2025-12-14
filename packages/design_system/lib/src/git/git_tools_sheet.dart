@@ -77,7 +77,7 @@ class _GitToolsSheetState extends State<GitToolsSheet>
   }
 
   Future<List<_GitWorktreeStatus>> _loadWorktreeStatusesBatched() async {
-    const marker = 'FIELDEXEC_GIT_BATCH_V1';
+    const marker = 'FIELDEXEC_GIT_BATCH_V2';
 
     final script =
         '''
@@ -106,21 +106,44 @@ git worktree list --porcelain | awk 'BEGIN{RS="";FS="\\n"}{
 }' | while IFS="\$(printf '\\t')" read -r wt_path wt_head wt_branch wt_detached; do
   [ -n "\$wt_path" ] || continue
 
-  printf 'WT\\t%s\\t%s\\t%s\\t%s\\n' "\$(b64 "\$wt_path")" "\$(b64 "\$wt_head")" "\$(b64 "\$wt_branch")" "\$wt_detached"
+  wt_abs="\$wt_path"
+  if [ -d "\$wt_path" ]; then
+    wt_abs="\$(cd "\$wt_path" 2>/dev/null && pwd -P || true)"
+    [ -n "\$wt_abs" ] || wt_abs="\$wt_path"
+  fi
 
-  git -C "\$wt_path" status --porcelain | while IFS= read -r line; do
+  set +e
+  status_out="\$(git -C "\$wt_abs" status --porcelain 2>&1)"
+  status_ec="\$?"
+  set -e
+
+  wt_dirty=0
+  if [ "\$status_ec" -eq 0 ] && [ -n "\$status_out" ]; then
+    wt_dirty=1
+  fi
+
+  # WT: path_b64<TAB>head_b64<TAB>branch_b64<TAB>detachedFlag<TAB>dirtyFlag
+  printf 'WT\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "\$(b64 "\$wt_abs")" "\$(b64 "\$wt_head")" "\$(b64 "\$wt_branch")" "\$wt_detached" "\$wt_dirty"
+
+  if [ "\$status_ec" -ne 0 ]; then
+    # E: path_b64<TAB>error_b64
+    printf 'E\\t%s\\t%s\\n' "\$(b64 "\$wt_abs")" "\$(b64 "\$status_out")"
+    continue
+  fi
+
+  printf '%s\\n' "\$status_out" | while IFS= read -r line; do
     [ -n "\$line" ] || continue
-    printf 'S\\t%s\\t%s\\n' "\$(b64 "\$wt_path")" "\$(b64 "\$line")"
+    printf 'S\\t%s\\t%s\\n' "\$(b64 "\$wt_abs")" "\$(b64 "\$line")"
   done
 
-  (git -C "\$wt_path" --no-pager diff --numstat || true) | while IFS="\$(printf '\\t')" read -r adds dels file; do
+  (git -C "\$wt_abs" --no-pager diff --numstat || true) | while IFS="\$(printf '\\t')" read -r adds dels file; do
     [ -n "\$file" ] || continue
-    printf 'N\\t%s\\t0\\t%s\\t%s\\t%s\\n' "\$(b64 "\$wt_path")" "\$adds" "\$dels" "\$(b64 "\$file")"
+    printf 'N\\t%s\\t0\\t%s\\t%s\\t%s\\n' "\$(b64 "\$wt_abs")" "\$adds" "\$dels" "\$(b64 "\$file")"
   done
 
-  (git -C "\$wt_path" --no-pager diff --cached --numstat || true) | while IFS="\$(printf '\\t')" read -r adds dels file; do
+  (git -C "\$wt_abs" --no-pager diff --cached --numstat || true) | while IFS="\$(printf '\\t')" read -r adds dels file; do
     [ -n "\$file" ] || continue
-    printf 'N\\t%s\\t1\\t%s\\t%s\\t%s\\n' "\$(b64 "\$wt_path")" "\$adds" "\$dels" "\$(b64 "\$file")"
+    printf 'N\\t%s\\t1\\t%s\\t%s\\t%s\\n' "\$(b64 "\$wt_abs")" "\$adds" "\$dels" "\$(b64 "\$file")"
   done
 done
 ''';
@@ -135,6 +158,8 @@ done
     final worktreeInfo = <String, _GitWorktreeInfo>{};
     final statusLines = <String, List<String>>{};
     final numstat = <String, Map<String, _GitNumstat>>{};
+    final dirtyByPath = <String, bool>{};
+    final errorByPath = <String, String>{};
 
     for (final raw in res.stdout.split('\n')) {
       final line = raw.trimRight();
@@ -150,17 +175,27 @@ done
         final head = parts.length >= 3 ? _b64Decode(parts[2]) : '';
         final branchRaw = parts.length >= 4 ? _b64Decode(parts[3]) : '';
         final detached = (parts.length >= 5 ? parts[4].trim() : '') == '1';
+        final dirty = (parts.length >= 6 ? parts[5].trim() : '') == '1';
 
         if (path.trim().isEmpty) continue;
         if (!worktreeInfo.containsKey(path)) {
           worktreeOrder.add(path);
         }
+        dirtyByPath[path] = dirty;
         worktreeInfo[path] = _GitWorktreeInfo(
           path: path,
           head: head,
           branch: branchRaw.trim().isEmpty ? null : branchRaw,
           detached: detached,
         );
+        continue;
+      }
+
+      if (tag == 'E') {
+        final path = parts.length >= 2 ? _b64Decode(parts[1]) : '';
+        final err = parts.length >= 3 ? _b64Decode(parts[2]) : '';
+        if (path.trim().isEmpty || err.trim().isEmpty) continue;
+        errorByPath[path] = err.trimRight();
         continue;
       }
 
@@ -219,7 +254,14 @@ done
           })
           .toList(growable: false);
 
-      out.add(_GitWorktreeStatus(info: info, files: enriched));
+      out.add(
+        _GitWorktreeStatus(
+          info: info,
+          files: enriched,
+          dirty: dirtyByPath[path] ?? enriched.isNotEmpty,
+          error: errorByPath[path],
+        ),
+      );
     }
 
     return out;
@@ -364,7 +406,20 @@ done
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
                                       Text(wt.tabLabel),
-                                      if (wt.isDirty)
+                                      if (wt.error != null)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            left: 6,
+                                          ),
+                                          child: Icon(
+                                            Icons.error_outline,
+                                            size: 14,
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.error,
+                                          ),
+                                        )
+                                      else if (wt.isDirty)
                                         Padding(
                                           padding: const EdgeInsets.only(
                                             left: 6,
@@ -425,7 +480,33 @@ class _GitWorktreeTab extends StatelessWidget {
         _WorktreeHeader(worktree: worktree, run: run),
         const SizedBox(height: 8),
         Expanded(
-          child: worktree.files.isEmpty
+          child: worktree.error != null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.error_outline),
+                        const SizedBox(height: 12),
+                        Text(
+                          'Failed to load worktree status.',
+                          style: Theme.of(context).textTheme.titleSmall,
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          worktree.error!,
+                          style: Theme.of(context).textTheme.bodySmall,
+                          textAlign: TextAlign.center,
+                          maxLines: 8,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              : worktree.files.isEmpty
               ? Center(
                   child: Text(
                     'No local changes detected.',
@@ -533,11 +614,25 @@ class _WorktreeHeader extends StatelessWidget {
                   ),
                 Chip(
                   avatar: Icon(
-                    worktree.isDirty ? Icons.warning_amber : Icons.check_circle,
+                    worktree.error != null
+                        ? Icons.error_outline
+                        : worktree.isDirty
+                        ? Icons.warning_amber
+                        : Icons.check_circle,
                     size: 18,
-                    color: worktree.isDirty ? cs.tertiary : cs.primary,
+                    color: worktree.error != null
+                        ? cs.error
+                        : worktree.isDirty
+                        ? cs.tertiary
+                        : cs.primary,
                   ),
-                  label: Text(worktree.isDirty ? 'Dirty' : 'Clean'),
+                  label: Text(
+                    worktree.error != null
+                        ? 'Error'
+                        : worktree.isDirty
+                        ? 'Dirty'
+                        : 'Clean',
+                  ),
                 ),
               ],
             ),
@@ -1113,10 +1208,17 @@ class _GitWorktreeInfo {
 class _GitWorktreeStatus {
   final _GitWorktreeInfo info;
   final List<_GitFileChange> files;
+  final bool dirty;
+  final String? error;
 
-  const _GitWorktreeStatus({required this.info, required this.files});
+  const _GitWorktreeStatus({
+    required this.info,
+    required this.files,
+    required this.dirty,
+    required this.error,
+  });
 
-  bool get isDirty => files.isNotEmpty;
+  bool get isDirty => error == null && (dirty || files.isNotEmpty);
 
   String get tabLabel {
     final s = info.label.trim();

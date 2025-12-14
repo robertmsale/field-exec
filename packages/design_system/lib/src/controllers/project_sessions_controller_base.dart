@@ -28,6 +28,7 @@ abstract class ProjectSessionsControllerBase extends GetxController {
 
   Future<void> addTab();
   Future<void> closeTab(ProjectTab tab);
+  Future<void> renameTab(ProjectTab tab, String title);
 
   Future<List<Conversation>> loadConversations();
   Future<void> openConversation(Conversation conversation);
