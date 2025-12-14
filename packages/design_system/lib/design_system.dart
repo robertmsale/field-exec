@@ -28,3 +28,5 @@ export 'src/session/codex_chat_view.dart';
 export 'src/session/codex_composer.dart';
 
 export 'src/theme/design_system_themes.dart';
+
+export 'src/git/git_tools_sheet.dart';

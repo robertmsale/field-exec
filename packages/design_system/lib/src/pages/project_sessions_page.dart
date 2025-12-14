@@ -6,6 +6,7 @@ import '../models/conversation.dart';
 import '../models/project_tab.dart';
 import '../session/codex_chat_view.dart';
 import '../session/codex_session_status_bar.dart';
+import '../git/git_tools_sheet.dart';
 import 'project_sessions_help_sheet.dart';
 import 'run_command_sheet.dart';
 
@@ -127,6 +128,21 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
               final items = await controller.loadConversations();
               if (!mounted) return;
               await _showConversationPicker(items);
+            },
+          ),
+          IconButton(
+            tooltip: 'Git',
+            icon: const Icon(Icons.difference),
+            onPressed: () async {
+              await showModalBottomSheet<void>(
+                context: context,
+                isScrollControlled: true,
+                showDragHandle: true,
+                builder: (_) => GitToolsSheet(
+                  run: controller.runShellCommand,
+                  projectPathLabel: controller.args.project.path,
+                ),
+              );
             },
           ),
         ],

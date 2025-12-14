@@ -89,6 +89,34 @@ class FieldExecWidgetbookApp extends StatelessWidget {
               ],
             ),
             WidgetbookComponent(
+              name: 'GitToolsSheet',
+              useCases: [
+                WidgetbookUseCase(
+                  name: 'Default',
+                  builder: (context) {
+                    return Scaffold(
+                      body: Center(
+                        child: FilledButton(
+                          onPressed: () async {
+                            await showModalBottomSheet<void>(
+                              context: context,
+                              isScrollControlled: true,
+                              showDragHandle: true,
+                              builder: (_) => GitToolsSheet(
+                                projectPathLabel: '/Users/me/demo-repo',
+                                run: _mockGitRunCommand,
+                              ),
+                            );
+                          },
+                          child: const Text('Open Git Sheet'),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+            WidgetbookComponent(
               name: 'SettingsPage',
               useCases: [
                 WidgetbookUseCase(
@@ -177,6 +205,59 @@ const _demoProjectArgs = ProjectArgs(
   target: _demoTarget,
   project: _demoProject,
 );
+
+Future<RunCommandResult> _mockGitRunCommand(String command) async {
+  final cmd = command.trim();
+  if (cmd == 'git worktree list --porcelain') {
+    return const RunCommandResult(
+      exitCode: 0,
+      stdout: 'worktree /Users/me/demo-repo\nHEAD deadbeefdeadbeef\nbranch refs/heads/main\n\n',
+      stderr: '',
+    );
+  }
+
+  if (cmd.startsWith('git -C ') && cmd.endsWith(' status --porcelain')) {
+    return const RunCommandResult(
+      exitCode: 0,
+      stdout: ' M lib/main.dart\n?? notes.txt\n',
+      stderr: '',
+    );
+  }
+
+  if (cmd.contains('--no-pager diff --numstat')) {
+    return const RunCommandResult(
+      exitCode: 0,
+      stdout: '3\t1\tlib/main.dart\n',
+      stderr: '',
+    );
+  }
+
+  if (cmd.contains('--no-pager diff --cached')) {
+    return const RunCommandResult(exitCode: 0, stdout: '', stderr: '');
+  }
+
+  if (cmd.contains('--no-pager diff --no-index')) {
+    return const RunCommandResult(
+      exitCode: 1,
+      stdout: 'diff --git a/notes.txt b/notes.txt\nnew file mode 100644\nindex 0000000..e69de29\n--- /dev/null\n+++ b/notes.txt\n@@\n+hello\n',
+      stderr: '',
+    );
+  }
+
+  if (cmd.contains('--no-pager diff -- ')) {
+    return const RunCommandResult(
+      exitCode: 0,
+      stdout: 'diff --git a/lib/main.dart b/lib/main.dart\nindex 1111111..2222222 100644\n--- a/lib/main.dart\n+++ b/lib/main.dart\n@@ -1,2 +1,2 @@\n-print(\"hi\")\n+print(\"hello\")\n',
+      stderr: '',
+    );
+  }
+
+  return RunCommandResult(
+    exitCode: 1,
+    stdout: '',
+    stderr: 'Mock: unsupported command: $cmd',
+  );
+}
 
 void _putConnection() {
   if (Get.isRegistered<ConnectionControllerBase>()) {
