@@ -361,17 +361,17 @@ class SessionController extends SessionControllerBase {
     final pem = await _storage.read(key: SecureStorageService.sshPrivateKeyPemKey);
 
     final root = projectPath;
-    final cmdBody = [
-      'set -e',
-      'p=${_shQuote(absPath)}',
-      'root=${_shQuote(root)}',
-      'case "\$p" in',
-      '  "\$root"|"\\$root"/*) ;;',
-      '  *) echo "outside workspace" >&2; exit 3 ;;',
-      'esac',
-      '[ -f "\$p" ] || { echo "missing: \$p" >&2; exit 4; }',
-      'sz=\$(stat -f %z "\$p" 2>/dev/null || stat -c %s "\$p" 2>/dev/null || echo 0)',
-      'if [ "\$sz" -gt ${_maxImageBytes.toString()} ]; then',
+      final cmdBody = [
+        'set -e',
+        'p=${_shQuote(absPath)}',
+        'root=${_shQuote(root)}',
+        'case "\$p" in',
+        '  "\$root"|"\$root"/*) ;;',
+        '  *) echo "outside workspace" >&2; exit 3 ;;',
+        'esac',
+        '[ -f "\$p" ] || { echo "missing: \$p" >&2; exit 4; }',
+        'sz=\$(stat -f %z "\$p" 2>/dev/null || stat -c %s "\$p" 2>/dev/null || echo 0)',
+        'if [ "\$sz" -gt ${_maxImageBytes.toString()} ]; then',
       '  echo "too large: \$sz bytes" >&2; exit 5;',
       'fi',
       'base64 < "\$p"',
@@ -1129,6 +1129,10 @@ class SessionController extends SessionControllerBase {
         '  exit 2',
         'fi',
         'printf %s\\\\n "\$prompt" | "\$CODEX_BIN" $codexArgs',
+        // If the last JSONL event is missing a trailing newline, tail/line-splitting
+        // can get stuck "waiting" forever. Force a final newline so the client
+        // receives the last line promptly.
+        'printf "\\\\n"',
       ].join('\n');
 
       final startBody = [

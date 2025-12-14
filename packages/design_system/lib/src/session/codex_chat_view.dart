@@ -747,6 +747,7 @@ class _CodexImageGridBubble extends StatelessWidget {
           ),
         );
       } else if (hasError) {
+        final details = error.trim();
         inner = Container(
           decoration: BoxDecoration(
             color: cs.errorContainer,
@@ -759,7 +760,7 @@ class _CodexImageGridBubble extends StatelessWidget {
               Icon(Icons.broken_image_outlined, color: cs.onErrorContainer),
               const SizedBox(height: 8),
               Text(
-                error.trim().isEmpty ? 'Failed' : 'Failed',
+                'Failed',
                 style: Theme.of(context)
                     .textTheme
                     .labelMedium
@@ -767,11 +768,14 @@ class _CodexImageGridBubble extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               Text(
-                'Tap to retry',
+                details.isEmpty ? 'Tap to retry' : details,
                 style: Theme.of(context)
                     .textTheme
                     .bodySmall
                     ?.copyWith(color: cs.onErrorContainer.withValues(alpha: 0.85)),
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
               ),
             ],
           ),
