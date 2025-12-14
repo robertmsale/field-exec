@@ -4,6 +4,15 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../controllers/project_sessions_controller_base.dart';
+import 'git_compare_commits_sheet.dart';
+import 'git_compare_worktrees_sheet.dart';
+
+class GitWorktreeRef {
+  final String label;
+  final String path;
+
+  const GitWorktreeRef({required this.label, required this.path});
+}
 
 class GitToolsSheet extends StatefulWidget {
   const GitToolsSheet({
@@ -24,6 +33,7 @@ class _GitToolsSheetState extends State<GitToolsSheet>
   bool _loading = true;
   String? _error;
   List<_GitWorktreeStatus> _worktrees = const [];
+  List<GitWorktreeRef> _worktreeRefs = const [];
 
   @override
   void initState() {
@@ -45,11 +55,15 @@ class _GitToolsSheetState extends State<GitToolsSheet>
       }
       setState(() {
         _worktrees = statuses;
+        _worktreeRefs = worktrees
+            .map((w) => GitWorktreeRef(label: w.label, path: w.path))
+            .toList(growable: false);
       });
     } catch (e) {
       setState(() {
         _error = e.toString();
         _worktrees = const [];
+        _worktreeRefs = const [];
       });
     } finally {
       if (mounted) {
@@ -195,12 +209,12 @@ class _GitToolsSheetState extends State<GitToolsSheet>
         worktreePath: wt.info.path,
         filePath: file.path,
         statusCode: file.statusCode,
-        diffText: diff,
+        diff: diff,
       ),
     );
   }
 
-  Future<String> _loadFileDiff({
+  Future<GitFileDiff> _loadFileDiff({
     required String worktreePath,
     required _GitFileChange change,
   }) async {
@@ -212,56 +226,49 @@ class _GitToolsSheetState extends State<GitToolsSheet>
     final unstaged = status.length >= 2 ? status[1] != ' ' : false;
     final untracked = status.startsWith('??');
 
-    final segments = <String>[];
-
-    Future<void> add(String label, String cmd) async {
+    Future<String> runDiff(String cmd) async {
       final res = await widget.run(cmd);
       final out = res.stdout.trimRight();
-      final err = res.stderr.trimRight();
-      if (res.exitCode != 0 && out.isEmpty) {
-        segments.add('### $label\n$err');
-        return;
-      }
-      if (out.trim().isEmpty) return;
-      segments.add('### $label\n$out');
+      if (out.trim().isNotEmpty) return out;
+      return res.stderr.trimRight();
     }
 
     final fileArg = oldPath != null && oldPath.isNotEmpty && oldPath != path
         ? '${_shQuote(oldPath)} ${_shQuote(path)}'
         : _shQuote(path);
 
+    var stagedText = '';
+    var unstagedText = '';
+    var untrackedText = '';
+
     if (untracked) {
-      await add(
-        'Untracked',
+      untrackedText = await runDiff(
         'git -C ${_shQuote(worktreePath)} --no-pager diff --no-index /dev/null -- $fileArg',
       );
     } else {
       if (staged) {
-        await add(
-          'Staged',
+        stagedText = await runDiff(
           'git -C ${_shQuote(worktreePath)} --no-pager diff --cached -- $fileArg',
         );
       }
       if (unstaged) {
-        await add(
-          'Unstaged',
+        unstagedText = await runDiff(
           'git -C ${_shQuote(worktreePath)} --no-pager diff -- $fileArg',
         );
       }
       if (!staged && !unstaged) {
         // Fallback for edge cases (e.g. type changes).
-        await add(
-          'Diff',
+        unstagedText = await runDiff(
           'git -C ${_shQuote(worktreePath)} --no-pager diff -- $fileArg',
         );
       }
     }
 
-    if (segments.isEmpty) {
-      return '';
-    }
-
-    return segments.join('\n\n');
+    return GitFileDiff(
+      staged: stagedText,
+      unstaged: unstagedText,
+      untracked: untrackedText,
+    );
   }
 
   @override
@@ -276,10 +283,32 @@ class _GitToolsSheetState extends State<GitToolsSheet>
             ListTile(
               title: const Text('Git'),
               subtitle: Text(widget.projectPathLabel),
-              trailing: IconButton(
-                tooltip: 'Refresh',
-                onPressed: _loading ? null : _refresh,
-                icon: const Icon(Icons.refresh),
+              trailing: Wrap(
+                spacing: 4,
+                children: [
+                  IconButton(
+                    tooltip: 'Compare worktrees',
+                    onPressed: _loading || _worktreeRefs.length < 2
+                        ? null
+                        : () async {
+                            await showModalBottomSheet<void>(
+                              context: context,
+                              isScrollControlled: true,
+                              showDragHandle: true,
+                              builder: (_) => GitCompareWorktreesSheet(
+                                run: widget.run,
+                                worktrees: _worktreeRefs,
+                              ),
+                            );
+                          },
+                    icon: const Icon(Icons.compare_arrows),
+                  ),
+                  IconButton(
+                    tooltip: 'Refresh',
+                    onPressed: _loading ? null : _refresh,
+                    icon: const Icon(Icons.refresh),
+                  ),
+                ],
               ),
             ),
             const Divider(height: 1),
@@ -330,6 +359,7 @@ class _GitToolsSheetState extends State<GitToolsSheet>
                                         for (final wt in _worktrees)
                                           _GitWorktreeTab(
                                             worktree: wt,
+                                            run: widget.run,
                                             onOpenFile: (f) =>
                                                 _openFileDiff(context, wt, f),
                                           ),
@@ -351,16 +381,18 @@ class _GitWorktreeTab extends StatelessWidget {
   const _GitWorktreeTab({
     required this.worktree,
     required this.onOpenFile,
+    required this.run,
   });
 
   final _GitWorktreeStatus worktree;
   final void Function(_GitFileChange file) onOpenFile;
+  final Future<RunCommandResult> Function(String command) run;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        _WorktreeHeader(worktree: worktree),
+        _WorktreeHeader(worktree: worktree, run: run),
         const SizedBox(height: 8),
         Expanded(
           child: worktree.files.isEmpty
@@ -405,9 +437,10 @@ class _GitWorktreeTab extends StatelessWidget {
 }
 
 class _WorktreeHeader extends StatelessWidget {
-  const _WorktreeHeader({required this.worktree});
+  const _WorktreeHeader({required this.worktree, required this.run});
 
   final _GitWorktreeStatus worktree;
+  final Future<RunCommandResult> Function(String command) run;
 
   @override
   Widget build(BuildContext context) {
@@ -421,11 +454,33 @@ class _WorktreeHeader extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              info.path,
-              style: Theme.of(context).textTheme.titleSmall,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    info.path,
+                    style: Theme.of(context).textTheme.titleSmall,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Compare commits',
+                  onPressed: () async {
+                    await showModalBottomSheet<void>(
+                      context: context,
+                      isScrollControlled: true,
+                      showDragHandle: true,
+                      builder: (_) => GitCompareCommitsSheet(
+                        run: run,
+                        worktreeLabel: worktree.tabLabel,
+                        worktreePath: info.path,
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.compare_arrows),
+                ),
+              ],
             ),
             const SizedBox(height: 8),
             Wrap(
@@ -516,30 +571,149 @@ class _GitEmptyState extends StatelessWidget {
   }
 }
 
-class GitDiffSheet extends StatelessWidget {
+enum GitDiffView {
+  unstaged,
+  staged,
+  untracked,
+  all,
+}
+
+class GitDiffSheet extends StatefulWidget {
   const GitDiffSheet({
     super.key,
     required this.worktreeLabel,
     required this.worktreePath,
     required this.filePath,
     required this.statusCode,
-    required this.diffText,
+    required this.diff,
+    this.viewLabels,
   });
 
   final String worktreeLabel;
   final String worktreePath;
   final String filePath;
   final String statusCode;
-  final String diffText;
+  final GitFileDiff diff;
+  final Map<GitDiffView, String>? viewLabels;
+
+  @override
+  State<GitDiffSheet> createState() => _GitDiffSheetState();
+}
+
+class _GitDiffSheetState extends State<GitDiffSheet> {
+  late GitDiffView _view;
+  final _expanded = <String>{};
+  final _hunkKeys = <String, GlobalKey>{};
+
+  GlobalKey _keyFor(String id) => _hunkKeys.putIfAbsent(id, GlobalKey.new);
+
+  @override
+  void initState() {
+    super.initState();
+    _view = _defaultView(widget.diff);
+  }
+
+  @override
+  void didUpdateWidget(covariant GitDiffSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.diff != widget.diff) {
+      _expanded.clear();
+      _view = _defaultView(widget.diff);
+    }
+  }
+
+  GitDiffView _defaultView(GitFileDiff diff) {
+    if (diff.unstaged.trim().isNotEmpty) return GitDiffView.unstaged;
+    if (diff.staged.trim().isNotEmpty) return GitDiffView.staged;
+    if (diff.untracked.trim().isNotEmpty) return GitDiffView.untracked;
+    return GitDiffView.all;
+  }
+
+  void _setView(GitDiffView view) {
+    if (_view == view) return;
+    setState(() => _view = view);
+  }
+
+  void _setAllExpanded(bool expanded, Iterable<_HunkRef> hunks) {
+    setState(() {
+      _expanded.clear();
+      if (!expanded) return;
+      for (final h in hunks) {
+        _expanded.add(h.key);
+      }
+    });
+  }
+
+  Future<void> _pickAndScrollToHunk(List<_HunkRef> hunks) async {
+    if (hunks.isEmpty) return;
+
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return SafeArea(
+          child: ListView.separated(
+            padding: const EdgeInsets.all(12),
+            itemCount: hunks.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final ref = hunks[index];
+              final title = _view == GitDiffView.all
+                  ? '${ref.section.title} • ${ref.hunk.header}'
+                  : ref.hunk.header;
+              return ListTile(
+                dense: true,
+                leading: const Icon(Icons.segment, size: 18),
+                title: Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                onTap: () => Navigator.of(context).pop(ref.key),
+              );
+            },
+          ),
+        );
+      },
+    );
+
+    if (picked == null) return;
+    await Future<void>.delayed(Duration.zero);
+    final ctx = _hunkKeys[picked]?.currentContext;
+    if (ctx == null) return;
+    await Scrollable.ensureVisible(
+      ctx,
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+      alignment: 0.1,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final height = MediaQuery.of(context).size.height * 0.85;
     final cs = Theme.of(context).colorScheme;
 
-    final hunks = _GitDiffHunk.parse(diffText);
-    final additions = _countLines(diffText, '+');
-    final deletions = _countLines(diffText, '-');
+    final sections = _sections(widget.diff);
+    final activeSections = _view == GitDiffView.all
+        ? sections
+        : sections.where((s) => s.view == _view).toList(growable: false);
+
+    final hunks = <_HunkRef>[];
+    for (final section in activeSections) {
+      hunks.addAll(
+        section.hunks.map((h) => _HunkRef(section: section, hunk: h)),
+      );
+    }
+
+    final additions = activeSections.fold<int>(
+      0,
+      (sum, s) => sum + _countLines(s.diffText, '+'),
+    );
+    final deletions = activeSections.fold<int>(
+      0,
+      (sum, s) => sum + _countLines(s.diffText, '-'),
+    );
 
     final mono = Theme.of(context).textTheme.bodySmall?.copyWith(
           fontFamily: 'RobotoMono',
@@ -564,20 +738,20 @@ class GitDiffSheet extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            filePath,
+                            widget.filePath,
                             style: Theme.of(context).textTheme.titleMedium,
                             overflow: TextOverflow.ellipsis,
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            '$worktreeLabel • $statusCode',
+                            '${widget.worktreeLabel} • ${widget.statusCode}',
                             style: Theme.of(context)
                                 .textTheme
                                 .bodySmall
                                 ?.copyWith(color: cs.onSurfaceVariant),
                           ),
                           Text(
-                            worktreePath,
+                            widget.worktreePath,
                             style: Theme.of(context)
                                 .textTheme
                                 .labelSmall
@@ -591,6 +765,69 @@ class GitDiffSheet extends StatelessWidget {
                       tooltip: 'Close',
                       icon: const Icon(Icons.close),
                       onPressed: () => Navigator.of(context).maybePop(),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    SegmentedButton<GitDiffView>(
+                      showSelectedIcon: false,
+                      segments: [
+                        if (widget.diff.unstaged.trim().isNotEmpty)
+                          ButtonSegment(
+                            value: GitDiffView.unstaged,
+                            label: Text(
+                              widget.viewLabels?[GitDiffView.unstaged] ?? 'Unstaged',
+                            ),
+                          ),
+                        if (widget.diff.staged.trim().isNotEmpty)
+                          ButtonSegment(
+                            value: GitDiffView.staged,
+                            label: Text(
+                              widget.viewLabels?[GitDiffView.staged] ?? 'Staged',
+                            ),
+                          ),
+                        if (widget.diff.untracked.trim().isNotEmpty)
+                          ButtonSegment(
+                            value: GitDiffView.untracked,
+                            label: Text(
+                              widget.viewLabels?[GitDiffView.untracked] ??
+                                  'Untracked',
+                            ),
+                          ),
+                        const ButtonSegment(
+                          value: GitDiffView.all,
+                          label: Text('All'),
+                        ),
+                      ],
+                      selected: {_view},
+                      onSelectionChanged: (set) {
+                        final next = set.isEmpty ? GitDiffView.all : set.first;
+                        _setView(next);
+                      },
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'Expand all',
+                      onPressed: hunks.isEmpty ? null : () => _setAllExpanded(true, hunks),
+                      icon: const Icon(Icons.unfold_more),
+                    ),
+                    IconButton(
+                      tooltip: 'Collapse all',
+                      onPressed: hunks.isEmpty ? null : () => _setAllExpanded(false, hunks),
+                      icon: const Icon(Icons.unfold_less),
+                    ),
+                    IconButton(
+                      tooltip: 'Jump to hunk',
+                      onPressed: hunks.isEmpty ? null : () => _pickAndScrollToHunk(hunks),
+                      icon: const Icon(Icons.list),
                     ),
                   ],
                 ),
@@ -620,7 +857,7 @@ class GitDiffSheet extends StatelessWidget {
                 child: hunks.isEmpty
                     ? Center(
                         child: Text(
-                          diffText.trim().isEmpty
+                          widget.diff.isEmpty
                               ? 'No diff to display.'
                               : 'Failed to parse diff.',
                           style: Theme.of(context).textTheme.bodyMedium,
@@ -631,37 +868,65 @@ class GitDiffSheet extends StatelessWidget {
                         itemCount: hunks.length,
                         separatorBuilder: (_, __) => const SizedBox(height: 12),
                         itemBuilder: (context, index) {
-                          final hunk = hunks[index];
-                          return Card(
-                            clipBehavior: Clip.antiAlias,
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                Container(
-                                  color: cs.surfaceContainerHighest,
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
-                                    vertical: 8,
-                                  ),
-                                  child: Text(
-                                    hunk.header,
+                          final ref = hunks[index];
+                          final hunk = ref.hunk;
+                          final expanded = _expanded.contains(ref.key);
+                          final stats = hunk.stats;
+
+                          final title = [
+                            if (_view == GitDiffView.all) ref.section.title,
+                            hunk.header,
+                            if (stats.additions > 0 || stats.deletions > 0)
+                              '(+${stats.additions} -${stats.deletions})',
+                          ].join(' • ');
+
+                          return KeyedSubtree(
+                            key: _keyFor(ref.key),
+                            child: Card(
+                              clipBehavior: Clip.antiAlias,
+                              child: Theme(
+                                data: Theme.of(context).copyWith(
+                                      dividerColor: Colors.transparent,
+                                    ),
+                                child: ExpansionTile(
+                                  initiallyExpanded: expanded,
+                                  onExpansionChanged: (v) {
+                                    setState(() {
+                                      if (v) {
+                                        _expanded.add(ref.key);
+                                      } else {
+                                        _expanded.remove(ref.key);
+                                      }
+                                    });
+                                  },
+                                  title: Text(
+                                    title,
                                     style: mono.copyWith(fontWeight: FontWeight.bold),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
                                   ),
+                                  backgroundColor: cs.surfaceContainerLow,
+                                  collapsedBackgroundColor: cs.surfaceContainerHighest,
+                                  childrenPadding: EdgeInsets.zero,
+                                  children: [
+                                    const Divider(height: 1),
+                                    for (final line in hunk.lines)
+                                      Container(
+                                        color: _lineBg(context, line),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                          vertical: 2,
+                                        ),
+                                        child: Text(
+                                          line.isEmpty ? ' ' : line,
+                                          style: mono.copyWith(
+                                            color: _lineFg(context, line),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
                                 ),
-                                const Divider(height: 1),
-                                for (final line in hunk.lines)
-                                  Container(
-                                    color: _lineBg(context, line),
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                      vertical: 2,
-                                    ),
-                                    child: Text(
-                                      line.isEmpty ? ' ' : line,
-                                      style: mono.copyWith(color: _lineFg(context, line)),
-                                    ),
-                                  ),
-                              ],
+                              ),
                             ),
                           );
                         },
@@ -711,6 +976,38 @@ class GitDiffSheet extends StatelessWidget {
       return cs.onSurface;
     }
     return null;
+  }
+
+  static List<_DiffSection> _sections(GitFileDiff diff) {
+    final sections = <_DiffSection>[];
+    if (diff.unstaged.trim().isNotEmpty) {
+      sections.add(
+        _DiffSection(
+          view: GitDiffView.unstaged,
+          title: 'Unstaged',
+          diffText: diff.unstaged,
+        ),
+      );
+    }
+    if (diff.staged.trim().isNotEmpty) {
+      sections.add(
+        _DiffSection(
+          view: GitDiffView.staged,
+          title: 'Staged',
+          diffText: diff.staged,
+        ),
+      );
+    }
+    if (diff.untracked.trim().isNotEmpty) {
+      sections.add(
+        _DiffSection(
+          view: GitDiffView.untracked,
+          title: 'Untracked',
+          diffText: diff.untracked,
+        ),
+      );
+    }
+    return sections;
   }
 }
 
@@ -851,8 +1148,13 @@ class _GitFileChange {
 class _GitDiffHunk {
   final String header;
   final List<String> lines;
+  final _GitDiffStats stats;
 
-  const _GitDiffHunk({required this.header, required this.lines});
+  const _GitDiffHunk({
+    required this.header,
+    required this.lines,
+    required this.stats,
+  });
 
   static List<_GitDiffHunk> parse(String diffText) {
     final raw = diffText.trimRight();
@@ -861,12 +1163,19 @@ class _GitDiffHunk {
     final lines = raw.split('\n');
     final hunks = <_GitDiffHunk>[];
 
-    var header = 'Diff';
+    var header = 'File header';
     var buf = <String>[];
+    var inHunks = false;
 
     void flush() {
       if (buf.isEmpty) return;
-      hunks.add(_GitDiffHunk(header: header, lines: buf));
+      hunks.add(
+        _GitDiffHunk(
+          header: header,
+          lines: buf,
+          stats: _GitDiffStats.fromLines(buf),
+        ),
+      );
       buf = <String>[];
     }
 
@@ -874,14 +1183,84 @@ class _GitDiffHunk {
       if (line.startsWith('@@')) {
         flush();
         header = line;
+        inHunks = true;
         continue;
       }
       buf.add(line);
     }
     flush();
+
+    if (!inHunks && hunks.isNotEmpty) {
+      // No @@ hunks found; keep a single "Diff" section for binary/other formats.
+      final only = hunks.first;
+      return [
+        _GitDiffHunk(
+          header: 'Diff',
+          lines: only.lines,
+          stats: only.stats,
+        ),
+      ];
+    }
     return hunks;
   }
 }
 
 String _shQuote(String s) => "'${s.replaceAll("'", "'\\''")}'";
 
+class GitFileDiff {
+  final String staged;
+  final String unstaged;
+  final String untracked;
+
+  const GitFileDiff({
+    required this.staged,
+    required this.unstaged,
+    required this.untracked,
+  });
+
+  bool get isEmpty =>
+      staged.trim().isEmpty &&
+      unstaged.trim().isEmpty &&
+      untracked.trim().isEmpty;
+}
+
+class _GitDiffStats {
+  final int additions;
+  final int deletions;
+
+  const _GitDiffStats({required this.additions, required this.deletions});
+
+  static _GitDiffStats fromLines(List<String> lines) {
+    var adds = 0;
+    var dels = 0;
+    for (final line in lines) {
+      if (line.startsWith('+++') || line.startsWith('---')) continue;
+      if (line.startsWith('+')) adds++;
+      if (line.startsWith('-')) dels++;
+    }
+    return _GitDiffStats(additions: adds, deletions: dels);
+  }
+}
+
+class _DiffSection {
+  final GitDiffView view;
+  final String title;
+  final String diffText;
+
+  const _DiffSection({
+    required this.view,
+    required this.title,
+    required this.diffText,
+  });
+
+  List<_GitDiffHunk> get hunks => _GitDiffHunk.parse(diffText);
+}
+
+class _HunkRef {
+  final _DiffSection section;
+  final _GitDiffHunk hunk;
+
+  const _HunkRef({required this.section, required this.hunk});
+
+  String get key => '${section.title}::${hunk.header}::${hunk.lines.length}';
+}

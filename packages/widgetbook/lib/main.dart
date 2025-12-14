@@ -117,6 +117,72 @@ class FieldExecWidgetbookApp extends StatelessWidget {
               ],
             ),
             WidgetbookComponent(
+              name: 'GitCompareCommitsSheet',
+              useCases: [
+                WidgetbookUseCase(
+                  name: 'Default',
+                  builder: (context) {
+                    return Scaffold(
+                      body: Center(
+                        child: FilledButton(
+                          onPressed: () async {
+                            await showModalBottomSheet<void>(
+                              context: context,
+                              isScrollControlled: true,
+                              showDragHandle: true,
+                              builder: (_) => GitCompareCommitsSheet(
+                                run: _mockGitRunCommand,
+                                worktreeLabel: 'main',
+                                worktreePath: '/Users/me/demo-repo',
+                              ),
+                            );
+                          },
+                          child: const Text('Open Commit Compare'),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+            WidgetbookComponent(
+              name: 'GitCompareWorktreesSheet',
+              useCases: [
+                WidgetbookUseCase(
+                  name: 'Default',
+                  builder: (context) {
+                    return Scaffold(
+                      body: Center(
+                        child: FilledButton(
+                          onPressed: () async {
+                            await showModalBottomSheet<void>(
+                              context: context,
+                              isScrollControlled: true,
+                              showDragHandle: true,
+                              builder: (_) => GitCompareWorktreesSheet(
+                                run: _mockGitRunCommand,
+                                worktrees: const [
+                                  GitWorktreeRef(
+                                    label: 'main',
+                                    path: '/Users/me/demo-repo',
+                                  ),
+                                  GitWorktreeRef(
+                                    label: 'feature-x',
+                                    path: '/Users/me/demo-repo-wt',
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                          child: const Text('Open Worktree Compare'),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+            WidgetbookComponent(
               name: 'SettingsPage',
               useCases: [
                 WidgetbookUseCase(
@@ -211,7 +277,31 @@ Future<RunCommandResult> _mockGitRunCommand(String command) async {
   if (cmd == 'git worktree list --porcelain') {
     return const RunCommandResult(
       exitCode: 0,
-      stdout: 'worktree /Users/me/demo-repo\nHEAD deadbeefdeadbeef\nbranch refs/heads/main\n\n',
+      stdout:
+          'worktree /Users/me/demo-repo\nHEAD deadbeefdeadbeef\nbranch refs/heads/main\n\nworktree /Users/me/demo-repo-wt\nHEAD cafebabecafebabe\nbranch refs/heads/feature-x\n\n',
+      stderr: '',
+    );
+  }
+
+  if (cmd.contains('--no-pager log --oneline')) {
+    return const RunCommandResult(
+      exitCode: 0,
+      stdout: 'aaaa111 Fix: something (HEAD -> main)\nbbbb222 Add: thing\ncccc333 Init\n',
+      stderr: '',
+    );
+  }
+
+  if (cmd.contains('rev-parse HEAD')) {
+    if (cmd.contains('/Users/me/demo-repo-wt')) {
+      return const RunCommandResult(
+        exitCode: 0,
+        stdout: 'cafebabecafebabe\n',
+        stderr: '',
+      );
+    }
+    return const RunCommandResult(
+      exitCode: 0,
+      stdout: 'deadbeefdeadbeef\n',
       stderr: '',
     );
   }
@@ -225,9 +315,34 @@ Future<RunCommandResult> _mockGitRunCommand(String command) async {
   }
 
   if (cmd.contains('--no-pager diff --numstat')) {
+    if (cmd.contains('aaaa111..bbbb222') || cmd.contains('bbbb222..aaaa111')) {
+      return const RunCommandResult(
+        exitCode: 0,
+        stdout: '10\t2\tlib/main.dart\n1\t0\tnotes.txt\n',
+        stderr: '',
+      );
+    }
+    if (cmd.contains('deadbeefdeadbeef..cafebabecafebabe')) {
+      return const RunCommandResult(
+        exitCode: 0,
+        stdout: '5\t1\tlib/main.dart\n',
+        stderr: '',
+      );
+    }
+    return const RunCommandResult(exitCode: 0, stdout: '3\t1\tlib/main.dart\n', stderr: '');
+  }
+
+  if (cmd.contains('--no-pager diff --name-status')) {
+    if (cmd.contains('deadbeefdeadbeef..cafebabecafebabe')) {
+      return const RunCommandResult(
+        exitCode: 0,
+        stdout: 'M\tlib/main.dart\n',
+        stderr: '',
+      );
+    }
     return const RunCommandResult(
       exitCode: 0,
-      stdout: '3\t1\tlib/main.dart\n',
+      stdout: 'M\tlib/main.dart\nA\tnotes.txt\n',
       stderr: '',
     );
   }
