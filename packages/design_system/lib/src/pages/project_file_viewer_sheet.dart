@@ -192,51 +192,37 @@ class _ProjectFileViewerSheetState extends State<ProjectFileViewerSheet> {
                         builder: (context, constraints) {
                           final minWidth = constraints.maxWidth;
                           return SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: ConstrainedBox(
-                              constraints: BoxConstraints(minWidth: minWidth),
-                              child: SelectionArea(
-                                child: ListView.builder(
-                                  padding: const EdgeInsets.fromLTRB(
-                                    12,
-                                    0,
-                                    12,
-                                    12,
+                            child: SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: ConstrainedBox(
+                                constraints: BoxConstraints(minWidth: minWidth),
+                                child: SelectionArea(
+                                  child: Padding(
+                                    padding: const EdgeInsets.fromLTRB(
+                                      12,
+                                      0,
+                                      12,
+                                      12,
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      children: [
+                                        for (
+                                          var index = 0;
+                                          index < _lines.length;
+                                          index++
+                                        )
+                                          _FileLine(
+                                            lineNo: index + 1,
+                                            text: _lines[index],
+                                            minWidth: minWidth,
+                                            mono: mono,
+                                            lineNoColor: cs.onSurfaceVariant,
+                                          ),
+                                      ],
+                                    ),
                                   ),
-                                  itemCount: _lines.length,
-                                  itemBuilder: (context, index) {
-                                    final lineNo = index + 1;
-                                    final text = _lines[index];
-                                    return Container(
-                                      constraints: BoxConstraints(
-                                        minWidth: minWidth,
-                                      ),
-                                      padding: const EdgeInsets.symmetric(
-                                        vertical: 2,
-                                        horizontal: 8,
-                                      ),
-                                      child: Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          SizedBox(
-                                            width: 52,
-                                            child: Text(
-                                              '$lineNo',
-                                              textAlign: TextAlign.right,
-                                              style: mono.copyWith(
-                                                color: cs.onSurfaceVariant,
-                                              ),
-                                            ),
-                                          ),
-                                          const SizedBox(width: 12),
-                                          Expanded(
-                                            child: Text(text, style: mono),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                  },
                                 ),
                               ),
                             ),
@@ -247,6 +233,45 @@ class _ProjectFileViewerSheetState extends State<ProjectFileViewerSheet> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _FileLine extends StatelessWidget {
+  final int lineNo;
+  final String text;
+  final double minWidth;
+  final TextStyle mono;
+  final Color lineNoColor;
+
+  const _FileLine({
+    required this.lineNo,
+    required this.text,
+    required this.minWidth,
+    required this.mono,
+    required this.lineNoColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: BoxConstraints(minWidth: minWidth),
+      padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 52,
+            child: Text(
+              '$lineNo',
+              textAlign: TextAlign.right,
+              style: mono.copyWith(color: lineNoColor),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(child: Text(text, style: mono, softWrap: false)),
+        ],
       ),
     );
   }
