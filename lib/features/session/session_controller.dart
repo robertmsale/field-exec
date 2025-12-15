@@ -99,6 +99,9 @@ class SessionController extends SessionControllerBase {
   final _recentLogLineHashSet = <String>{};
   final _seenAgentMessageItemIds = <String>{};
   var _autoCommitCatchUpInProgress = false;
+  Timer? _tailAutoRestartTimer;
+  int _tailAutoRestartAttempts = 0;
+  Object? _tailAutoRestartToken;
 
   SessionController({
     required this.target,
@@ -164,6 +167,9 @@ class SessionController extends SessionControllerBase {
     } catch (_) {}
     try {
       _hashSaveTimer?.cancel();
+    } catch (_) {}
+    try {
+      _tailAutoRestartTimer?.cancel();
     } catch (_) {}
     _cancelTailOnly();
     _cancelLocalTailOnly();
@@ -235,6 +241,105 @@ class SessionController extends SessionControllerBase {
     } else {
       await _refreshRemoteRunningStateAndTail(backfillLines: backfillLines);
     }
+  }
+
+  bool _isActiveView() {
+    final active = _activeSession.active;
+    return active != null &&
+        active.targetKey == target.targetKey &&
+        active.projectPath == projectPath &&
+        active.tabId == tabId;
+  }
+
+  bool _shouldAutoRestartTail() {
+    if (isClosed) return false;
+    if (!_isActiveView()) return false;
+    final job = remoteJobId.value ?? _remoteJobId;
+    if (job != null && job.trim().isNotEmpty) return true;
+    return isRunning.value;
+  }
+
+  void _resetTailAutoRestart() {
+    _tailAutoRestartAttempts = 0;
+    _tailAutoRestartToken = null;
+    try {
+      _tailAutoRestartTimer?.cancel();
+    } catch (_) {}
+    _tailAutoRestartTimer = null;
+  }
+
+  void _noteTailHealthy() {
+    if (_tailAutoRestartAttempts == 0 &&
+        _tailAutoRestartToken == null &&
+        _tailAutoRestartTimer == null) {
+      return;
+    }
+    _resetTailAutoRestart();
+  }
+
+  Future<bool> _isTailProcessRunning({required bool local}) async {
+    if (local) {
+      final proc = _localTailProc;
+      if (proc == null) return false;
+      try {
+        await proc.exitCode.timeout(const Duration(milliseconds: 50));
+        return false;
+      } on TimeoutException {
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    final proc = _tailProc;
+    if (proc == null) return false;
+    try {
+      await proc.exitCode.timeout(const Duration(milliseconds: 50));
+      return false;
+    } on TimeoutException {
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void _scheduleTailAutoRestart({required bool local}) {
+    if (!_shouldAutoRestartTail()) {
+      _resetTailAutoRestart();
+      return;
+    }
+    if (_tailAutoRestartTimer != null) return;
+
+    _tailAutoRestartToken ??= Object();
+    final token = _tailAutoRestartToken!;
+    final attempt = _tailAutoRestartAttempts;
+    if (attempt >= 8) {
+      _resetTailAutoRestart();
+      _insertEvent(
+        type: 'tail_closed',
+        text: 'Log tail stopped; tap Refresh to reconnect.',
+      );
+      return;
+    }
+
+    final delayMs = (300 * (1 << attempt)).clamp(300, 5000);
+    _tailAutoRestartTimer = Timer(Duration(milliseconds: delayMs), () async {
+      _tailAutoRestartTimer = null;
+      if (isClosed) return;
+      if (_tailAutoRestartToken != token) return;
+
+      _tailAutoRestartAttempts = attempt + 1;
+      try {
+        await reattachIfNeeded(backfillLines: 200);
+      } catch (_) {}
+
+      final tailOk = await _isTailProcessRunning(local: local);
+      if (tailOk || !_shouldAutoRestartTail()) {
+        _resetTailAutoRestart();
+        return;
+      }
+      _scheduleTailAutoRestart(local: local);
+    });
   }
 
   @override
@@ -1457,6 +1562,7 @@ class SessionController extends SessionControllerBase {
 
     _localTailStdoutSub = proc.stdoutLines.listen((line) {
       if (line.trim().isEmpty) return;
+      _noteTailHealthy();
       _noteLogLineSeen(line);
       _bumpLogLineCursor();
       if (!_shouldProcessLogLine(line)) return;
@@ -1472,12 +1578,14 @@ class SessionController extends SessionControllerBase {
 
     _localTailStderrSub = proc.stderrLines.listen((line) {
       if (line.trim().isEmpty) return;
+      _noteTailHealthy();
       _insertEvent(type: 'tail_stderr', text: line);
     });
 
     proc.done.then((_) {
       if (_localTailToken != token) return;
       _cancelLocalTailOnly();
+      _scheduleTailAutoRestart(local: true);
     });
   }
 
@@ -2442,6 +2550,7 @@ class SessionController extends SessionControllerBase {
 
     _tailStdoutSub = proc.stdoutLines.listen((line) {
       if (line.trim().isEmpty) return;
+      _noteTailHealthy();
       _noteLogLineSeen(line);
       _bumpLogLineCursor();
       if (!_shouldProcessLogLine(line)) return;
@@ -2459,16 +2568,15 @@ class SessionController extends SessionControllerBase {
 
     _tailStderrSub = proc.stderrLines.listen((line) {
       if (line.trim().isEmpty) return;
+      _noteTailHealthy();
       _insertEvent(type: 'tail_stderr', text: line);
     });
 
     proc.done.then((_) {
       // If this tail was cancelled/replaced intentionally, suppress noise.
       if (_tailToken != token) return;
-      if (!isClosed) {
-        _insertEvent(type: 'tail_closed', text: 'Log tail stopped.');
-      }
       _cancelTailOnly();
+      _scheduleTailAutoRestart(local: false);
     });
   }
 
