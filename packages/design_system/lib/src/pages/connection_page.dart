@@ -58,7 +58,8 @@ class _ConnectionPageState extends State<ConnectionPage> {
 
   bool get _supportsLocalRunner => Platform.isMacOS || Platform.isLinux;
 
-  bool get _isRemote => !_supportsLocalRunner || !controller.useLocalRunner.value;
+  bool get _isRemote =>
+      !_supportsLocalRunner || !controller.useLocalRunner.value;
 
   Widget _modePicker() {
     if (!_supportsLocalRunner) return const SizedBox.shrink();
@@ -73,10 +74,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
             value: _ConnectMode.remote,
             label: Text('Remote (SSH)'),
           ),
-          ButtonSegment(
-            value: _ConnectMode.local,
-            label: Text('Local'),
-          ),
+          ButtonSegment(value: _ConnectMode.local, label: Text('Local')),
         ],
         selected: selected,
         onSelectionChanged: controller.isBusy.value
@@ -549,7 +547,10 @@ class _ConnectionPageState extends State<ConnectionPage> {
       return Scaffold(
         body: SafeArea(
           child: Obx(() {
-            if (_supportsLocalRunner && controller.useLocalRunner.value) {
+            // Always read the observable inside Obx; if we short-circuit on a
+            // non-reactive flag, GetX will report an improper Obx usage.
+            final useLocal = controller.useLocalRunner.value;
+            if (_supportsLocalRunner && useLocal) {
               return _localConnect();
             }
             return _remoteConnect();

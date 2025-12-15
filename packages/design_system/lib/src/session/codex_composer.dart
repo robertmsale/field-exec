@@ -64,10 +64,9 @@ class _CodexComposerState extends State<CodexComposer> {
 
                   final preview = widget.controller.thinkingPreview.value;
                   final cs = Theme.of(context).colorScheme;
-                  final style = Theme.of(context)
-                      .textTheme
-                      .labelSmall
-                      ?.copyWith(color: cs.onSurfaceVariant);
+                  final style = Theme.of(
+                    context,
+                  ).textTheme.labelSmall?.copyWith(color: cs.onSurfaceVariant);
 
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 8),
@@ -102,11 +101,10 @@ class _CodexComposerState extends State<CodexComposer> {
                             hintText: 'Message Codex…',
                             border: InputBorder.none,
                           ),
-                          textInputAction: TextInputAction.send,
-                          onSubmitted: (value) {
-                            if (widget.controller.isRunning.value) return;
-                            widget.controller.sendText(value);
-                          },
+                          keyboardType: TextInputType.multiline,
+                          textInputAction: TextInputAction.newline,
+                          minLines: 1,
+                          maxLines: 6,
                         ),
                       ),
                     ),
