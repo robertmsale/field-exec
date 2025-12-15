@@ -237,6 +237,40 @@ class SessionController extends SessionControllerBase {
   }
 
   @override
+  Future<void> refresh() async {
+    // Clear the visible chat and then attempt to rehydrate + reattach to the
+    // active log tail (useful after backgrounding/disconnects or duplication).
+    _repairedExplodedChat = false;
+    _pendingActionsMessage = null;
+    isLoadingMoreHistory.value = false;
+    hasMoreHistory.value = false;
+    _historyLogRelPath = _logRelPath;
+    _historyFocusThreadId = null;
+    _historyRemoteStartLine = null;
+    _historyLocalStartIndex = null;
+    _needsScrollToBottom.value = false;
+
+    if (!target.local) _cancelTailOnly();
+    if (target.local) _cancelLocalTailOnly();
+
+    try {
+      await chatController.setMessages([], animated: false);
+    } catch (_) {}
+
+    try {
+      if (target.local) {
+        await _rehydrateFromLocalLog(maxLines: 200, logRelPath: _logRelPath);
+      } else {
+        await _rehydrateFromRemoteLog(maxLines: 200);
+      }
+    } catch (_) {}
+
+    try {
+      await reattachIfNeeded(backfillLines: 0);
+    } catch (_) {}
+  }
+
+  @override
   Future<void> loadMoreHistory() async {
     if (isLoadingMoreHistory.value) return;
     if (!hasMoreHistory.value) return;
@@ -2818,6 +2852,13 @@ class SessionController extends SessionControllerBase {
       for (final line in lines) {
         if (line.trim().isNotEmpty) _rememberRecentLogLine(line);
       }
+      for (var i = lines.length - 1; i >= 0; i--) {
+        final line = lines[i];
+        if (line.trim().isEmpty) continue;
+        _logLastLineHash = _fnv1a64Hex(line);
+        _flushLogLastLineHash();
+        break;
+      }
 
       final tailStartLine = (totalLines - lines.length + 1).clamp(
         1,
@@ -3177,6 +3218,13 @@ class SessionController extends SessionControllerBase {
     final tailStartIndex = (lines.length - tail.length).clamp(0, lines.length);
     for (final line in tail) {
       if (line.trim().isNotEmpty) _rememberRecentLogLine(line);
+    }
+    for (var i = tail.length - 1; i >= 0; i--) {
+      final line = tail[i];
+      if (line.trim().isEmpty) continue;
+      _logLastLineHash = _fnv1a64Hex(line);
+      _flushLogLastLineHash();
+      break;
     }
 
     final start = _findFocusStartIndex(tail, focusThreadId);

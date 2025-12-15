@@ -20,6 +20,7 @@ abstract class SessionControllerBase extends GetxController {
   Future<void> sendQuickReply(String value);
   Future<void> resumeThreadById(String id, {String? preview});
   Future<void> reattachIfNeeded({int backfillLines});
+  Future<void> refresh();
   Future<void> loadMoreHistory();
   Future<void> loadImageAttachment(CustomMessage message, {int? index});
   Future<void> resetSession();

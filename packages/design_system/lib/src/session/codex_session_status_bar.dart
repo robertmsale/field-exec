@@ -29,26 +29,38 @@ class CodexSessionStatusBar extends StatelessWidget {
             bottom: BorderSide(color: cs.outlineVariant),
           ),
         ),
-        child: DefaultTextStyle(
-          style: style,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                job == null || job.isEmpty ? 'Job: —' : 'Job: $job',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+        child: Row(
+          children: [
+            Expanded(
+              child: DefaultTextStyle(
+                style: style,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      job == null || job.isEmpty ? 'Job: —' : 'Job: $job',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    Text(
+                      thread == null || thread.isEmpty
+                          ? 'Thread: —'
+                          : 'Thread: $thread',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
               ),
-              Text(
-                thread == null || thread.isEmpty ? 'Thread: —' : 'Thread: $thread',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ],
-          ),
+            ),
+            IconButton(
+              tooltip: 'Refresh',
+              onPressed: controller.refresh,
+              icon: const Icon(Icons.refresh),
+            ),
+          ],
         ),
       );
     });
   }
 }
-

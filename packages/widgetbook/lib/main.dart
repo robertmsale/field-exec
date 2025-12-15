@@ -853,6 +853,13 @@ class MockSessionController extends SessionControllerBase {
   static const _system = 'system';
 
   @override
+  Future<void> refresh() async {
+    needsScrollToBottom.value = false;
+    await chatController.setMessages([], animated: false);
+    if (seed) _seedIfNeeded();
+  }
+
+  @override
   void onInit() {
     super.onInit();
     if (seed) _seedIfNeeded();
