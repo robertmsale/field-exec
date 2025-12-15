@@ -94,6 +94,11 @@ class ProjectsPage extends GetView<ProjectsControllerBase> {
         title: const Text('Projects'),
         actions: [
           IconButton(
+            tooltip: 'Settings',
+            onPressed: () => Get.toNamed(DesignRoutes.settings),
+            icon: const Icon(Icons.settings),
+          ),
+          IconButton(
             tooltip: 'Add',
             onPressed: () async {
               final project = await controller.promptAddProject();

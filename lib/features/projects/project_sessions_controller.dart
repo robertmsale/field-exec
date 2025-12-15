@@ -24,6 +24,9 @@ class ProjectSessionsController extends ProjectSessionsControllerBase {
   ProjectSessionsController({required this.args});
 
   @override
+  final projectName = ''.obs;
+
+  @override
   final tabs = <ProjectTab>[].obs;
   @override
   final activeIndex = 0.obs;
@@ -47,6 +50,7 @@ class ProjectSessionsController extends ProjectSessionsControllerBase {
   @override
   void onInit() {
     super.onInit();
+    projectName.value = args.project.name;
     _load();
     _activeWorker1 = ever<int>(activeIndex, (_) => _updateActiveSession());
     _activeWorker2 = ever<List<ProjectTab>>(
@@ -231,6 +235,23 @@ class ProjectSessionsController extends ProjectSessionsControllerBase {
       projectPath: args.project.path,
       tabs: tabs.toList(growable: false),
     );
+  }
+
+  @override
+  Future<void> renameProject(String title) async {
+    final nextName = title.trim();
+    if (nextName.isEmpty) return;
+
+    final list = await _projects.loadProjects(targetKey: args.target.targetKey);
+    final idx = list.indexWhere((p) => p.id == args.project.id);
+    if (idx == -1) return;
+    final next = list.toList(growable: true);
+    next[idx] = next[idx].copyWith(name: nextName);
+    await _projects.saveProjects(
+      targetKey: args.target.targetKey,
+      projects: next.toList(growable: false),
+    );
+    projectName.value = nextName;
   }
 
   @override

@@ -484,6 +484,10 @@ class MockConnectionController extends ConnectionControllerBase {
   @override
   final isBusy = false.obs;
   @override
+  final hasSavedPrivateKey = false.obs;
+  @override
+  final requiresSshBootstrap = false.obs;
+  @override
   final status = ''.obs;
   @override
   final recentProfiles = <ConnectionProfile>[
@@ -513,8 +517,58 @@ class MockConnectionController extends ConnectionControllerBase {
 
   @override
   Future<void> savePrivateKeyToKeychain() async {
+    hasSavedPrivateKey.value = true;
     status.value = 'Saved (mock).';
   }
+
+  @override
+  Future<void> savePrivateKeyPem(String pem) async {
+    privateKeyPemController.text = pem;
+    hasSavedPrivateKey.value = pem.trim().isNotEmpty;
+    requiresSshBootstrap.value = false;
+    status.value = 'Saved key (mock).';
+  }
+
+  @override
+  Future<String> generateNewPrivateKeyPem() async {
+    return '-----BEGIN OPENSSH PRIVATE KEY-----\\nMOCK\\n-----END OPENSSH PRIVATE KEY-----';
+  }
+
+  @override
+  Future<List<String>> listHostPrivateKeys({
+    required String userAtHost,
+    required int port,
+    required String password,
+  }) async {
+    return const ['/Users/me/.ssh/id_ed25519', '/Users/me/.ssh/id_rsa'];
+  }
+
+  @override
+  Future<String> readHostPrivateKeyPem({
+    required String userAtHost,
+    required int port,
+    required String password,
+    required String remotePath,
+  }) async {
+    return await generateNewPrivateKeyPem();
+  }
+
+  @override
+  Future<String> authorizedKeysLineFromPrivateKey({
+    required String privateKeyPem,
+    String? privateKeyPassphrase,
+  }) async {
+    return 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMOCK field-exec';
+  }
+
+  @override
+  Future<void> installPublicKeyWithPassword({
+    required String userAtHost,
+    required int port,
+    required String password,
+    required String privateKeyPem,
+    String? privateKeyPassphrase,
+  }) async {}
 
   @override
   Future<void> runLocalCodex() async {
@@ -606,6 +660,9 @@ class MockProjectSessionsController extends ProjectSessionsControllerBase {
   MockProjectSessionsController({required this.args});
 
   @override
+  final projectName = ''.obs;
+
+  @override
   final tabs = <ProjectTab>[].obs;
   @override
   final activeIndex = 0.obs;
@@ -619,6 +676,7 @@ class MockProjectSessionsController extends ProjectSessionsControllerBase {
   @override
   void onInit() {
     super.onInit();
+    projectName.value = args.project.name;
     tabs.assignAll(const [
       ProjectTab(id: 'tab-1', title: 'Tab 1'),
       ProjectTab(id: 'tab-2', title: 'Tab 2'),
@@ -671,6 +729,13 @@ class MockProjectSessionsController extends ProjectSessionsControllerBase {
     final idx = tabs.indexWhere((t) => t.id == tab.id);
     if (idx == -1) return;
     tabs[idx] = ProjectTab(id: tab.id, title: nextTitle);
+  }
+
+  @override
+  Future<void> renameProject(String title) async {
+    final next = title.trim();
+    if (next.isEmpty) return;
+    projectName.value = next;
   }
 
   @override

@@ -15,6 +15,8 @@ abstract class ConnectionControllerBase extends GetxController {
   Rx<PosixShell> get remoteShell;
 
   RxBool get isBusy;
+  RxBool get hasSavedPrivateKey;
+  RxBool get requiresSshBootstrap;
   RxString get status;
   RxList<ConnectionProfile> get recentProfiles;
 
@@ -22,6 +24,30 @@ abstract class ConnectionControllerBase extends GetxController {
 
   Future<void> reloadKeyFromKeychain();
   Future<void> savePrivateKeyToKeychain();
+  Future<void> savePrivateKeyPem(String pem);
+  Future<String> generateNewPrivateKeyPem();
+  Future<List<String>> listHostPrivateKeys({
+    required String userAtHost,
+    required int port,
+    required String password,
+  });
+  Future<String> readHostPrivateKeyPem({
+    required String userAtHost,
+    required int port,
+    required String password,
+    required String remotePath,
+  });
+  Future<String> authorizedKeysLineFromPrivateKey({
+    required String privateKeyPem,
+    String? privateKeyPassphrase,
+  });
+  Future<void> installPublicKeyWithPassword({
+    required String userAtHost,
+    required int port,
+    required String password,
+    required String privateKeyPem,
+    String? privateKeyPassphrase,
+  });
   Future<void> runLocalCodex();
   Future<void> testSshConnection();
 }

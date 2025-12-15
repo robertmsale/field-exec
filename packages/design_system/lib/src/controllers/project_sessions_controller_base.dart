@@ -20,6 +20,7 @@ class RunCommandResult {
 
 abstract class ProjectSessionsControllerBase extends GetxController {
   ProjectArgs get args;
+  RxString get projectName;
 
   RxList<ProjectTab> get tabs;
   RxInt get activeIndex;
@@ -30,6 +31,7 @@ abstract class ProjectSessionsControllerBase extends GetxController {
   Future<void> addTab();
   Future<void> closeTab(ProjectTab tab);
   Future<void> renameTab(ProjectTab tab, String title);
+  Future<void> renameProject(String title);
 
   Future<List<Conversation>> loadConversations();
   Future<void> openConversation(Conversation conversation);

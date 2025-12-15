@@ -19,6 +19,7 @@ enum _ProjectMenuAction {
   resumeConversation,
   git,
   developerInstructions,
+  renameProject,
 }
 
 class ProjectSessionsPage extends StatefulWidget {
@@ -117,6 +118,13 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
     );
   }
 
+  Future<void> _renameProject() async {
+    final title = await _promptRenameProject();
+    if (!mounted) return;
+    if (title == null) return;
+    await controller.renameProject(title);
+  }
+
   Future<void> _handleMenu(_ProjectMenuAction action) async {
     switch (action) {
       case _ProjectMenuAction.help:
@@ -133,6 +141,9 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
         return;
       case _ProjectMenuAction.developerInstructions:
         await _editDeveloperInstructions();
+        return;
+      case _ProjectMenuAction.renameProject:
+        await _renameProject();
         return;
     }
   }
@@ -186,6 +197,39 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
               autofocus: true,
               textInputAction: TextInputAction.done,
               decoration: const InputDecoration(labelText: 'Tab name'),
+              onSubmitted: (v) => Navigator.of(context).pop(v),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(text.text),
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
+      );
+    } finally {
+      text.dispose();
+    }
+  }
+
+  Future<String?> _promptRenameProject() async {
+    final text = TextEditingController(text: controller.projectName.value);
+    try {
+      return showDialog<String>(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: const Text('Rename project'),
+            content: TextField(
+              controller: text,
+              autofocus: true,
+              textInputAction: TextInputAction.done,
+              decoration: const InputDecoration(labelText: 'Project name'),
               onSubmitted: (v) => Navigator.of(context).pop(v),
             ),
             actions: [
@@ -274,7 +318,7 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(controller.args.project.name),
+        title: Obx(() => Text(controller.projectName.value)),
         actions: [
           IconButton(
             tooltip: 'Switch project',
@@ -283,9 +327,17 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
           ),
           PopupMenuButton<_ProjectMenuAction>(
             tooltip: 'Project menu',
-            icon: const Icon(Icons.settings),
+            icon: const Icon(Icons.more_vert),
             onSelected: (a) => unawaited(_handleMenu(a)),
             itemBuilder: (_) => const [
+              PopupMenuItem<_ProjectMenuAction>(
+                value: _ProjectMenuAction.renameProject,
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(Icons.edit, size: 18),
+                  title: Text('Rename project…'),
+                ),
+              ),
               PopupMenuItem<_ProjectMenuAction>(
                 value: _ProjectMenuAction.developerInstructions,
                 child: ListTile(
@@ -517,7 +569,7 @@ class _DeveloperInstructionsSheetState
               ListTile(
                 title: const Text('Developer instructions'),
                 subtitle: Text(
-                  '${widget.controller.args.project.name} • .field_exec/developer_instructions.txt',
+                  '${widget.controller.projectName.value} • .field_exec/developer_instructions.txt',
                 ),
                 trailing: Wrap(
                   spacing: 4,
