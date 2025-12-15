@@ -965,6 +965,24 @@ class SessionController extends SessionControllerBase {
     });
   }
 
+  void _flushLogLineCursor() {
+    try {
+      _cursorSaveTimer?.cancel();
+    } catch (_) {}
+    _cursorSaveTimer = null;
+    final cursor = _logLineCursor;
+    _cursorSaveQueue = _cursorSaveQueue.then((_) async {
+      try {
+        await _sessionStore.saveLogLineCursor(
+          targetKey: target.targetKey,
+          projectPath: projectPath,
+          tabId: tabId,
+          cursor: cursor,
+        );
+      } catch (_) {}
+    });
+  }
+
   Future<void> _loadThreadId() async {
     final stored = await _sessionStore.loadThreadId(
       targetKey: target.targetKey,
@@ -1237,28 +1255,16 @@ class SessionController extends SessionControllerBase {
     }
   }
 
-  Future<void> _startLocalLogTailIfNeeded({
+  int _computeLogStartLine({
+    required int currentLines,
+    required int backfillLines,
     int? startAtLine,
-    int backfillLines = 200,
-  }) async {
-    if (_localTailProc != null) return;
-    final logPath = _joinPosix(projectPath, _logRelPath);
-    final file = File(logPath);
-    if (!await file.exists()) {
-      await file.parent.create(recursive: true);
-      await file.create(recursive: true);
-    }
-
+  }) {
     int start = startAtLine ?? 0;
     if (start <= 0) {
-      int currentLines = 0;
-      try {
-        currentLines = await _localLineCount(path: logPath);
-      } catch (_) {}
-
-      if (_logLineCursor > 0 &&
-          currentLines > 0 &&
-          _logLineCursor > currentLines) {
+      // If the log was truncated/rewritten since we last tailed it, reset to a
+      // reasonable backfill window; otherwise continue from the last cursor.
+      if (_logLineCursor > 0 && _logLineCursor > currentLines) {
         start = (currentLines - backfillLines + 1).clamp(
           1,
           currentLines == 0 ? 1 : currentLines,
@@ -1276,6 +1282,30 @@ class SessionController extends SessionControllerBase {
     } else {
       _logLineCursor = start - 1;
     }
+    return start;
+  }
+
+  Future<void> _startLocalLogTailIfNeeded({
+    int? startAtLine,
+    int backfillLines = 200,
+  }) async {
+    if (_localTailProc != null) return;
+    final logPath = _joinPosix(projectPath, _logRelPath);
+    final file = File(logPath);
+    if (!await file.exists()) {
+      await file.parent.create(recursive: true);
+      await file.create(recursive: true);
+    }
+
+    int currentLines = 0;
+    try {
+      currentLines = await _localLineCount(path: logPath);
+    } catch (_) {}
+    final start = _computeLogStartLine(
+      currentLines: currentLines,
+      backfillLines: backfillLines,
+      startAtLine: startAtLine,
+    );
 
     final proc = _localShell.startCommand(
       executable: 'tail',
@@ -1311,6 +1341,67 @@ class SessionController extends SessionControllerBase {
     });
   }
 
+  Future<void> _catchUpFromLocalLogOnce({required int backfillLines}) async {
+    if (!target.local) return;
+    if (_localTailProc != null) return;
+
+    final logPath = _joinPosix(projectPath, _logRelPath);
+    final file = File(logPath);
+    if (!await file.exists()) return;
+
+    int currentLines = 0;
+    try {
+      currentLines = await _localLineCount(path: logPath);
+    } catch (_) {}
+    final start = _computeLogStartLine(
+      currentLines: currentLines,
+      backfillLines: backfillLines,
+      startAtLine: null,
+    );
+
+    LocalCommandProcess? proc;
+    StreamSubscription<String>? outSub;
+    StreamSubscription<String>? errSub;
+    try {
+      proc = _localShell.startCommand(
+        executable: 'tail',
+        arguments: ['-n', '+$start', logPath],
+        workingDirectory: projectPath,
+      );
+
+      outSub = proc.stdoutLines.listen((line) {
+        if (line.trim().isEmpty) return;
+        _bumpLogLineCursor();
+        if (!_shouldProcessLogLine(line)) return;
+        _tailQueue = _tailQueue.then((_) async {
+          try {
+            final decoded = jsonDecode(line);
+            if (decoded is Map) {
+              await _handleCodexJsonEvent(decoded.cast<String, Object?>());
+            }
+          } catch (_) {}
+        });
+      });
+
+      errSub = proc.stderrLines.listen((line) {
+        if (line.trim().isEmpty) return;
+        _insertEvent(type: 'catchup_stderr', text: line);
+      });
+
+      await proc.done;
+    } finally {
+      try {
+        await outSub?.cancel();
+      } catch (_) {}
+      try {
+        await errSub?.cancel();
+      } catch (_) {}
+      try {
+        proc?.cancel();
+      } catch (_) {}
+    }
+  }
+
   void _rememberRecentLogLine(String line) {
     // Keep a small LRU-ish window of raw JSONL lines to suppress duplicates
     // when reattaching the tail after sleep/background.
@@ -1331,6 +1422,7 @@ class SessionController extends SessionControllerBase {
   }
 
   void _onAppBackgrounded() {
+    _flushLogLineCursor();
     // Avoid holding a long-lived SSH connection open while backgrounded.
     // The remote job continues in tmux/nohup; we can reattach on resume.
     if (!target.local) _cancelTailOnly();
@@ -1347,26 +1439,13 @@ class SessionController extends SessionControllerBase {
     if (!isActiveView) return;
 
     if (target.local) {
-      final job = _remoteJobId ?? remoteJobId.value;
-      if (job == null || job.isEmpty) return;
       if (_localTailProc != null) return;
-      await _refreshLocalRunningStateAndTail(backfillLines: 200);
-      return;
+    } else {
+      if (_tailProc != null) return;
     }
-    if ((_remoteJobId ?? remoteJobId.value) == null ||
-        (_remoteJobId ?? remoteJobId.value)!.isEmpty) {
-      try {
-        final latched = await _tryLatchRemoteJobIdFromRemoteJobFile();
-        if (latched != null && latched.isNotEmpty) {
-          _remoteJobId = latched;
-          remoteJobId.value = latched;
-        }
-      } catch (_) {}
-    }
-    final job = _remoteJobId ?? remoteJobId.value;
-    if (job == null || job.isEmpty) return;
-    if (_tailProc != null) return;
-    await _refreshRemoteRunningStateAndTail(backfillLines: 200);
+    // Always attempt a log catch-up on resume, even if the job finished while
+    // backgrounded (remote job id may be stale until we replay the log).
+    await reattachIfNeeded(backfillLines: 200);
   }
 
   Future<void> _runCodexTurn({required String prompt}) async {
@@ -1975,33 +2054,15 @@ class SessionController extends SessionControllerBase {
 
     final logAbs = _remoteAbsPath(_logRelPath);
 
-    int startLine = startAtLine ?? 0;
-    if (startLine <= 0) {
-      int currentLines = 0;
-      try {
-        currentLines = await _remoteLineCount(absPath: logAbs);
-      } catch (_) {}
-
-      if (_logLineCursor > 0 &&
-          currentLines > 0 &&
-          _logLineCursor > currentLines) {
-        startLine = (currentLines - backfillLines + 1).clamp(
-          1,
-          currentLines == 0 ? 1 : currentLines,
-        );
-        _logLineCursor = startLine - 1;
-      } else if (_logLineCursor > 0) {
-        startLine = _logLineCursor + 1;
-      } else {
-        startLine = (currentLines - backfillLines + 1).clamp(
-          1,
-          currentLines == 0 ? 1 : currentLines,
-        );
-        _logLineCursor = startLine - 1;
-      }
-    } else {
-      _logLineCursor = startLine - 1;
-    }
+    int currentLines = 0;
+    try {
+      currentLines = await _remoteLineCount(absPath: logAbs);
+    } catch (_) {}
+    final startLine = _computeLogStartLine(
+      currentLines: currentLines,
+      backfillLines: backfillLines,
+      startAtLine: startAtLine,
+    );
 
     final cmd = _wrapWithShell(
       profile,
@@ -2043,9 +2104,109 @@ class SessionController extends SessionControllerBase {
     });
   }
 
+  Future<void> _catchUpFromRemoteLogOnce({required int backfillLines}) async {
+    if (target.local) return;
+    if (_tailProc != null) return;
+
+    final profile = target.profile;
+    if (profile == null) return;
+
+    final pem = await _storage.read(
+      key: SecureStorageService.sshPrivateKeyPemKey,
+    );
+    if (pem == null || pem.trim().isEmpty) return;
+
+    Future<SshCommandProcess> startProc(String cmd) async {
+      try {
+        return await _ssh.startCommand(
+          host: profile.host,
+          port: profile.port,
+          username: profile.username,
+          privateKeyPem: pem,
+          password: _sshPassword,
+          command: cmd,
+        );
+      } catch (_) {
+        if (_sshPassword == null) {
+          final pw = await _promptForPassword();
+          if (pw == null || pw.isEmpty) rethrow;
+          _sshPassword = pw;
+          return _ssh.startCommand(
+            host: profile.host,
+            port: profile.port,
+            username: profile.username,
+            privateKeyPem: pem,
+            password: _sshPassword,
+            command: cmd,
+          );
+        }
+        rethrow;
+      }
+    }
+
+    final logAbs = _remoteAbsPath(_logRelPath);
+    int currentLines = 0;
+    try {
+      currentLines = await _remoteLineCount(absPath: logAbs);
+    } catch (_) {}
+    final startLine = _computeLogStartLine(
+      currentLines: currentLines,
+      backfillLines: backfillLines,
+      startAtLine: null,
+    );
+
+    final cmdBody = [
+      'if [ -f ${_shQuote(logAbs)} ]; then',
+      '  tail -n +$startLine ${_shQuote(logAbs)} 2>/dev/null || true',
+      'fi',
+    ].join('\n');
+
+    SshCommandProcess? proc;
+    StreamSubscription<String>? outSub;
+    StreamSubscription<String>? errSub;
+    try {
+      proc = await startProc(_wrapWithShell(profile, cmdBody));
+
+      outSub = proc.stdoutLines.listen((line) {
+        if (line.trim().isEmpty) return;
+        _bumpLogLineCursor();
+        if (!_shouldProcessLogLine(line)) return;
+        _tailQueue = _tailQueue.then((_) async {
+          try {
+            final decoded = jsonDecode(line);
+            if (decoded is Map) {
+              await _handleCodexJsonEvent(decoded.cast<String, Object?>());
+            }
+          } catch (_) {}
+        });
+      });
+
+      errSub = proc.stderrLines.listen((line) {
+        if (line.trim().isEmpty) return;
+        _insertEvent(type: 'catchup_stderr', text: line);
+      });
+
+      await proc.done;
+    } finally {
+      try {
+        await outSub?.cancel();
+      } catch (_) {}
+      try {
+        await errSub?.cancel();
+      } catch (_) {}
+      try {
+        proc?.cancel();
+      } catch (_) {}
+    }
+  }
+
   Future<void> _refreshRemoteRunningStateAndTail({
     required int backfillLines,
   }) async {
+    try {
+      await _catchUpFromRemoteLogOnce(backfillLines: backfillLines);
+    } catch (_) {}
+
     var stored =
         _remoteJobId ??
         await _sessionStore.loadRemoteJobId(
@@ -2149,6 +2310,9 @@ class SessionController extends SessionControllerBase {
     required int backfillLines,
   }) async {
     if (!target.local) return;
+    try {
+      await _catchUpFromLocalLogOnce(backfillLines: backfillLines);
+    } catch (_) {}
     final stored =
         remoteJobId.value ??
         (await _sessionStore.loadRemoteJobId(
@@ -2362,6 +2526,11 @@ class SessionController extends SessionControllerBase {
       remoteJobId.value = stored;
 
       await _rehydrateFromRemoteLog(maxLines: 200);
+      // If the job finished while the app was backgrounded/terminated, we may
+      // have missed >200 lines; replay any unseen log lines using the cursor.
+      try {
+        await _catchUpFromRemoteLogOnce(backfillLines: 200);
+      } catch (_) {}
 
       if (stored == null || stored.isEmpty) return;
 
@@ -3224,19 +3393,6 @@ class SessionController extends SessionControllerBase {
           );
           if (messages.isNotEmpty) {
             await chatController.insertAllMessages(messages, animated: true);
-            for (final m in messages) {
-              if (m is! CustomMessage) continue;
-              final meta = m.metadata ?? const {};
-              final kind = meta['kind']?.toString();
-              if (kind == 'codex_image') {
-                final status = meta['status']?.toString();
-                if (status == 'loading') {
-                  unawaited(loadImageAttachment(m));
-                }
-              } else if (kind == 'codex_image_grid') {
-                unawaited(loadImageAttachment(m));
-              }
-            }
           }
           return;
         }
@@ -3294,7 +3450,7 @@ class SessionController extends SessionControllerBase {
                         'path': img.path.trim(),
                         if (img.caption.trim().isNotEmpty)
                           'caption': img.caption.trim(),
-                        'status': replay ? 'tap_to_load' : 'loading',
+                        'status': 'tap_to_load',
                       },
                     )
                     .where(
