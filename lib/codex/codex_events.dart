@@ -24,10 +24,27 @@ class CodexStructuredImageRef {
 
   const CodexStructuredImageRef({required this.path, required this.caption});
 
+  static String _coerceString(Object? v) {
+    if (v == null) return '';
+    return v.toString();
+  }
+
   factory CodexStructuredImageRef.fromJson(Map<String, Object?> json) {
+    // Be tolerant here: even with a strict schema, models sometimes drift on
+    // key names when returning many images. We still want to render what we can.
+    final path = _coerceString(
+      json['path'] ??
+          json['file_path'] ??
+          json['filepath'] ??
+          json['image_path'] ??
+          json['file'],
+    );
+    final caption = _coerceString(
+      json['caption'] ?? json['title'] ?? json['label'] ?? json['alt'],
+    );
     return CodexStructuredImageRef(
-      path: json['path']?.toString() ?? '',
-      caption: json['caption']?.toString() ?? '',
+      path: path,
+      caption: caption,
     );
   }
 }
@@ -45,13 +62,45 @@ class CodexStructuredResponse {
     required this.actions,
   });
 
+  static List<CodexStructuredImageRef> _parseImages(Object? raw) {
+    final Iterable imagesRaw;
+    if (raw is List) {
+      imagesRaw = raw;
+    } else if (raw is Map) {
+      imagesRaw = raw.values;
+    } else {
+      imagesRaw = const [];
+    }
+    final out = <CodexStructuredImageRef>[];
+    for (final entry in imagesRaw) {
+      if (entry is Map) {
+        // Some toolchains wrap the payload as {"image": {...}} or {"ref": {...}}.
+        final inner = (entry['image'] is Map)
+            ? entry['image']
+            : ((entry['ref'] is Map) ? entry['ref'] : entry);
+        try {
+          out.add(
+            CodexStructuredImageRef.fromJson(inner.cast<String, Object?>()),
+          );
+        } catch (_) {}
+      } else if (entry is List) {
+        final p = (entry.isNotEmpty ? entry[0] : null)?.toString().trim();
+        final c = (entry.length >= 2 ? entry[1] : null)?.toString().trim();
+        if (p != null && p.isNotEmpty) {
+          out.add(CodexStructuredImageRef(path: p, caption: c ?? ''));
+        }
+      } else if (entry is String) {
+        final p = entry.trim();
+        if (p.isNotEmpty) {
+          out.add(CodexStructuredImageRef(path: p, caption: ''));
+        }
+      }
+    }
+    return out.where((i) => i.path.trim().isNotEmpty).toList(growable: false);
+  }
+
   factory CodexStructuredResponse.fromJson(Map<String, Object?> json) {
-    final imagesRaw = (json['images'] as List?) ?? const [];
-    final images = imagesRaw
-        .whereType<Map>()
-        .map((m) => CodexStructuredImageRef.fromJson(m.cast<String, Object?>()))
-        .where((i) => i.path.trim().isNotEmpty)
-        .toList(growable: false);
+    final images = _parseImages(json['images']);
     final actionsRaw = (json['actions'] as List?) ?? const [];
     final actions = actionsRaw
         .whereType<Map>()
