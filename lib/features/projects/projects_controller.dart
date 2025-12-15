@@ -22,6 +22,14 @@ class ProjectsController extends ProjectsControllerBase {
 
   ProjectStore get _store => Get.find<ProjectStore>();
 
+  static int _compareProjects(Project a, Project b) {
+    final an = a.name.trim().toLowerCase();
+    final bn = b.name.trim().toLowerCase();
+    final c = an.compareTo(bn);
+    if (c != 0) return c;
+    return a.path.trim().toLowerCase().compareTo(b.path.trim().toLowerCase());
+  }
+
   @override
   void onInit() {
     super.onInit();
@@ -32,7 +40,8 @@ class ProjectsController extends ProjectsControllerBase {
     isBusy.value = true;
     try {
       final loaded = await _store.loadProjects(targetKey: target.targetKey);
-      projects.assignAll(loaded);
+      final next = loaded.toList(growable: true)..sort(_compareProjects);
+      projects.assignAll(next);
     } finally {
       isBusy.value = false;
     }
@@ -103,9 +112,11 @@ class ProjectsController extends ProjectsControllerBase {
 
   @override
   Future<void> addProject(Project project) async {
-    final next = [project, ...projects].take(25).toList(growable: false);
-    projects.assignAll(next);
-    await _store.saveProjects(targetKey: target.targetKey, projects: next);
+    final next = [project, ...projects].toList(growable: true)
+      ..sort(_compareProjects);
+    final capped = next.take(25).toList(growable: false);
+    projects.assignAll(capped);
+    await _store.saveProjects(targetKey: target.targetKey, projects: capped);
     await _store.saveLastProjectId(
       targetKey: target.targetKey,
       projectId: project.id,
@@ -118,6 +129,7 @@ class ProjectsController extends ProjectsControllerBase {
     if (idx == -1) return;
     final next = projects.toList(growable: true);
     next[idx] = project;
+    next.sort(_compareProjects);
     projects.assignAll(next);
     await _store.saveProjects(
       targetKey: target.targetKey,
@@ -129,8 +141,12 @@ class ProjectsController extends ProjectsControllerBase {
   Future<void> deleteProject(Project project) async {
     final next = projects
         .where((p) => p.id != project.id)
-        .toList(growable: false);
+        .toList(growable: true)
+      ..sort(_compareProjects);
     projects.assignAll(next);
-    await _store.saveProjects(targetKey: target.targetKey, projects: next);
+    await _store.saveProjects(
+      targetKey: target.targetKey,
+      projects: next.toList(growable: false),
+    );
   }
 }

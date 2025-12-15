@@ -252,6 +252,29 @@ class ProjectSessionsController extends ProjectSessionsControllerBase {
       projects: next.toList(growable: false),
     );
     projectName.value = nextName;
+
+    // Keep the Projects list (if present in the back stack) in sync so the
+    // renamed project is visible immediately when navigating back.
+    if (Get.isRegistered<ProjectsControllerBase>()) {
+      try {
+        final projectsController = Get.find<ProjectsControllerBase>();
+        if (projectsController.target.targetKey != args.target.targetKey) {
+          return;
+        }
+        final items = projectsController.projects.toList(growable: true);
+        final i = items.indexWhere((p) => p.id == args.project.id);
+        if (i == -1) return;
+        items[i] = items[i].copyWith(name: nextName);
+        items.sort((a, b) {
+          final an = a.name.trim().toLowerCase();
+          final bn = b.name.trim().toLowerCase();
+          final c = an.compareTo(bn);
+          if (c != 0) return c;
+          return a.path.trim().toLowerCase().compareTo(b.path.trim().toLowerCase());
+        });
+        projectsController.projects.assignAll(items);
+      } catch (_) {}
+    }
   }
 
   @override

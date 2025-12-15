@@ -9,6 +9,40 @@ import '../routes/design_routes.dart';
 class ProjectsPage extends GetView<ProjectsControllerBase> {
   const ProjectsPage({super.key});
 
+  Future<String?> _promptRenameProject(
+    BuildContext context, {
+    required String initialValue,
+  }) async {
+    final text = TextEditingController(text: initialValue);
+    try {
+      return showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Rename project'),
+          content: TextField(
+            controller: text,
+            autofocus: true,
+            textInputAction: TextInputAction.done,
+            decoration: const InputDecoration(labelText: 'Project name'),
+            onSubmitted: (v) => Navigator.of(context).pop(v),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(text.text),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      );
+    } finally {
+      text.dispose();
+    }
+  }
+
   Future<String?> _promptNewGroupName(BuildContext context) async {
     final text = TextEditingController();
     try {
@@ -151,6 +185,14 @@ class ProjectsPage extends GetView<ProjectsControllerBase> {
                 tooltip: 'More',
                 itemBuilder: (_) => [
                   const PopupMenuItem<String>(
+                    value: 'rename',
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(Icons.edit, size: 18),
+                      title: Text('Rename…'),
+                    ),
+                  ),
+                  const PopupMenuItem<String>(
                     value: 'group',
                     child: ListTile(
                       dense: true,
@@ -180,6 +222,17 @@ class ProjectsPage extends GetView<ProjectsControllerBase> {
                 onSelected: (v) async {
                   if (v == 'delete') {
                     await controller.deleteProject(p);
+                    return;
+                  }
+                  if (v == 'rename') {
+                    final title = await _promptRenameProject(
+                      context,
+                      initialValue: p.name,
+                    );
+                    if (title == null) return;
+                    final nextName = title.trim();
+                    if (nextName.isEmpty) return;
+                    await controller.updateProject(p.copyWith(name: nextName));
                     return;
                   }
                   if (v == 'ungroup') {

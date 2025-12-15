@@ -27,6 +27,7 @@ You MUST produce a final response that is valid JSON matching the schema passed 
 - If you need a user decision, return `actions` as button options:
   - Each action has `id`, `label`, and `value`.
   - When tapped, the client sends `value` as the next user message.
+  - Even if the only option is "Continue", provide that option for the user.
 
 Do NOT add extra wrapper text outside the JSON object.
 ''';
