@@ -263,50 +263,47 @@ class _GitCompareCommitsSheetState extends State<GitCompareCommitsSheet> {
                           padding: const EdgeInsets.all(12),
                           child: Column(
                             children: [
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: _CommitPicker(
-                                      label: 'Base',
-                                      commits: _commits,
-                                      selected: _base,
-                                      controller: _baseController,
-                                      onChanged: (c) {
-                                        setState(() {
-                                          _base = c;
-                                          _baseController.text = c?.sha ?? '';
-                                        });
-                                      },
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: _CommitPicker(
-                                      label: 'Head',
-                                      commits: _commits,
-                                      selected: _head,
-                                      controller: _headController,
-                                      onChanged: (c) {
-                                        setState(() {
-                                          _head = c;
-                                          _headController.text = c?.sha ?? '';
-                                        });
-                                      },
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  FilledButton.icon(
-                                    onPressed: _runningCompare ? null : _compare,
-                                    icon: _runningCompare
-                                        ? const SizedBox(
-                                            width: 16,
-                                            height: 16,
-                                            child: CircularProgressIndicator(strokeWidth: 2),
-                                          )
-                                        : const Icon(Icons.difference),
-                                    label: const Text('Compare'),
-                                  ),
-                                ],
+                              _CommitPicker(
+                                label: 'Base',
+                                commits: _commits,
+                                selected: _base,
+                                controller: _baseController,
+                                onChanged: (c) {
+                                  setState(() {
+                                    _base = c;
+                                    _baseController.text = c?.sha ?? '';
+                                  });
+                                },
+                              ),
+                              const SizedBox(height: 12),
+                              _CommitPicker(
+                                label: 'Head',
+                                commits: _commits,
+                                selected: _head,
+                                controller: _headController,
+                                onChanged: (c) {
+                                  setState(() {
+                                    _head = c;
+                                    _headController.text = c?.sha ?? '';
+                                  });
+                                },
+                              ),
+                              const SizedBox(height: 12),
+                              SizedBox(
+                                width: double.infinity,
+                                child: FilledButton.icon(
+                                  onPressed: _runningCompare ? null : _compare,
+                                  icon: _runningCompare
+                                      ? const SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : const Icon(Icons.difference),
+                                  label: const Text('Compare'),
+                                ),
                               ),
                               if (_error != null && _files.isEmpty) ...[
                                 const SizedBox(height: 12),
@@ -392,7 +389,7 @@ class _CommitPicker extends StatelessWidget {
                 (c) => DropdownMenuItem(
                   value: c,
                   child: Text(
-                    '${c.sha} ${c.label}',
+                    c.label.trim().isNotEmpty ? '${c.label} (${c.sha})' : c.sha,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
