@@ -15,7 +15,7 @@ class CodexComposer extends StatefulWidget {
 }
 
 class _CodexComposerState extends State<CodexComposer> {
-  late final TextEditingController _text;
+  late TextEditingController _text;
   final GlobalKey _key = GlobalKey();
   double _lastHeight = -1;
 
@@ -23,6 +23,17 @@ class _CodexComposerState extends State<CodexComposer> {
   void initState() {
     super.initState();
     _text = widget.controller.inputController;
+  }
+
+  @override
+  void didUpdateWidget(covariant CodexComposer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      // The composer is stateful (measures height), so Flutter may reuse it when
+      // swapping tabs. Rebind to the new controller to avoid holding a disposed
+      // TextEditingController from the previous session.
+      _text = widget.controller.inputController;
+    }
   }
 
   void _measure() {

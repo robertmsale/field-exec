@@ -491,6 +491,52 @@ class ProjectSessionsController extends ProjectSessionsControllerBase {
     final idx = tabs.indexWhere((t) => t.id == tab.id);
     if (idx == -1) return;
 
+    // If this is the last tab, swap it in-place with a new tab (keeps the tab
+    // count stable and avoids transient builds with disposed controllers).
+    if (tabs.length == 1) {
+      final replacementId = _uuid.v4();
+      final replacement = ProjectTab(id: replacementId, title: 'Tab 1');
+
+      final tag = _sessionTag(replacementId);
+      Get.put(
+        SessionController(
+          target: args.target,
+          projectPath: args.project.path,
+          tabId: replacementId,
+        ),
+        tag: tag,
+        permanent: true,
+      );
+
+      tabs[idx] = replacement;
+      activeIndex.value = 0;
+
+      await _store.clearThreadId(
+        targetKey: args.target.targetKey,
+        projectPath: args.project.path,
+        tabId: tab.id,
+      );
+      await _store.clearRemoteJobId(
+        targetKey: args.target.targetKey,
+        projectPath: args.project.path,
+        tabId: tab.id,
+      );
+
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        try {
+          Get.delete<SessionController>(tag: _sessionTag(tab.id), force: true);
+        } catch (_) {}
+      });
+
+      await _writeSharedTabs(tabs.toList(growable: false));
+      await _tabsStore.saveTabs(
+        targetKey: args.target.targetKey,
+        projectPath: args.project.path,
+        tabs: tabs.toList(growable: false),
+      );
+      return;
+    }
+
     // Move selection away from the closing tab first to avoid transient builds
     // that still reference the soon-to-be-disposed SessionController.
     final wasActive = activeIndex.value == idx;
@@ -520,14 +566,6 @@ class ProjectSessionsController extends ProjectSessionsControllerBase {
         Get.delete<SessionController>(tag: _sessionTag(tab.id), force: true);
       } catch (_) {}
     });
-
-    if (tabs.isEmpty) {
-      final id = _uuid.v4();
-      final created = ProjectTab(id: id, title: 'Tab 1');
-      tabs.add(created);
-      activeIndex.value = 0;
-      _ensureSessionControllers();
-    }
 
     await _writeSharedTabs(tabs.toList(growable: false));
     await _tabsStore.saveTabs(
