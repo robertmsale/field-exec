@@ -247,6 +247,26 @@ class _ConnectionPageState extends State<ConnectionPage> {
   }
 
   Widget _bootstrapStep1() {
+    if (_supportsLocalRunner) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'No SSH private keys were found in ~/.ssh on this computer.\n\n'
+            'Continue with password-based setup to either generate a new key or use an existing key on the host.',
+          ),
+          const SizedBox(height: 12),
+          FilledButton(
+            onPressed: _working
+                ? null
+                : () =>
+                      setState(() => _step = _BootstrapStep.connectionDetails),
+            child: const Text('Enter password'),
+          ),
+        ],
+      );
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -518,6 +538,30 @@ class _ConnectionPageState extends State<ConnectionPage> {
   @override
   Widget build(BuildContext context) {
     return Obx(() {
+      final scanningLocalKeys =
+          _isRemote &&
+          _supportsLocalRunner &&
+          controller.checkingLocalKeys.value &&
+          !controller.hasSavedPrivateKey.value &&
+          !controller.requiresSshBootstrap.value;
+      if (scanningLocalKeys) {
+        return Scaffold(
+          body: _bootstrapScaffold(
+            child: Row(
+              children: const [
+                SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(width: 12),
+                Expanded(child: Text('Scanning ~/.ssh for keys…')),
+              ],
+            ),
+          ),
+        );
+      }
+
       final needsBootstrap =
           _isRemote &&
           (!controller.hasSavedPrivateKey.value ||

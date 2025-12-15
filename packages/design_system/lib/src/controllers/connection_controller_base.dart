@@ -17,6 +17,7 @@ abstract class ConnectionControllerBase extends GetxController {
   RxBool get isBusy;
   RxBool get hasSavedPrivateKey;
   RxBool get requiresSshBootstrap;
+  RxBool get checkingLocalKeys;
   RxString get status;
   RxList<ConnectionProfile> get recentProfiles;
 

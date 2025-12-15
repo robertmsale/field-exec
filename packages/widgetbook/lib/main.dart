@@ -488,6 +488,8 @@ class MockConnectionController extends ConnectionControllerBase {
   @override
   final requiresSshBootstrap = false.obs;
   @override
+  final checkingLocalKeys = false.obs;
+  @override
   final status = ''.obs;
   @override
   final recentProfiles = <ConnectionProfile>[
@@ -1270,6 +1272,21 @@ class MockKeysController extends KeysControllerBase {
   final status = 'Key loaded (mock).'.obs;
 
   @override
+  final scanningLocalKeys = false.obs;
+
+  @override
+  final localKeyCandidates = <LocalSshKeyCandidate>[
+    const LocalSshKeyCandidate(
+      path: '/home/mock/.ssh/id_ed25519',
+      looksEncrypted: false,
+    ),
+    const LocalSshKeyCandidate(
+      path: '/home/mock/.ssh/id_rsa',
+      looksEncrypted: true,
+    ),
+  ].obs;
+
+  @override
   Future<void> load() async {}
 
   @override
@@ -1292,6 +1309,17 @@ class MockKeysController extends KeysControllerBase {
   @override
   Future<void> copyPublicKey() async {
     status.value = 'Copied (mock).';
+  }
+
+  @override
+  Future<void> scanLocalKeys() async {
+    // Already pre-populated.
+  }
+
+  @override
+  Future<void> useLocalKey(LocalSshKeyCandidate key) async {
+    pemController.text = '-----BEGIN MOCK KEY-----\n# from ${key.path}\n...';
+    status.value = 'Imported ${key.filename} (mock).';
   }
 
   @override

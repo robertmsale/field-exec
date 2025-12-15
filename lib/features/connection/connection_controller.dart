@@ -6,6 +6,7 @@ import 'package:get/get.dart';
 
 import '../../rinf/rust_ssh_service.dart';
 import '../../services/connection_history_service.dart';
+import '../../services/local_ssh_keys_service.dart';
 import '../../services/secure_storage_service.dart';
 import '../../services/ssh_key_service.dart';
 import '../../services/ssh_service.dart';
@@ -37,16 +38,20 @@ class ConnectionController extends ConnectionControllerBase {
   @override
   final requiresSshBootstrap = false.obs;
   @override
+  final checkingLocalKeys = false.obs;
+  @override
   final status = ''.obs;
   @override
   final recentProfiles = <ConnectionProfile>[].obs;
 
   String? _sshPassword;
+  var _attemptedAutoImportLocalKey = false;
 
   SecureStorageService get _storage => Get.find<SecureStorageService>();
   ConnectionHistoryService get _history => Get.find<ConnectionHistoryService>();
   SshService get _ssh => Get.find<SshService>();
   SshKeyService get _keys => Get.find<SshKeyService>();
+  LocalSshKeysService get _localKeys => Get.find<LocalSshKeysService>();
 
   @override
   void onInit() {
@@ -76,11 +81,47 @@ class ConnectionController extends ConnectionControllerBase {
   }
 
   Future<void> _loadKeyFromKeychain() async {
-    final pem = await _storage.read(
+    final pemRaw = await _storage.read(
       key: SecureStorageService.sshPrivateKeyPemKey,
     );
-    privateKeyPemController.text = pem ?? '';
-    hasSavedPrivateKey.value = pem != null && pem.trim().isNotEmpty;
+    var pem = (pemRaw ?? '').trim();
+
+    // Desktop convenience: if no key is saved in the app, try importing a local
+    // ~/.ssh private key so the user never sees the password bootstrap flow.
+    final canAutoImport =
+        !_attemptedAutoImportLocalKey &&
+        requiresSshBootstrap.value == false &&
+        pem.isEmpty &&
+        LocalSshKeysService.supportsScan;
+
+    if (canAutoImport) {
+      _attemptedAutoImportLocalKey = true;
+      checkingLocalKeys.value = true;
+      try {
+        final candidates = await _localKeys.scan(maxCandidates: 20);
+        if (candidates.isNotEmpty) {
+          final picked = candidates.first;
+          final imported = await _localKeys.readPrivateKeyPem(picked.path);
+          pem = imported.trim();
+          if (pem.isNotEmpty) {
+            await _storage.write(
+              key: SecureStorageService.sshPrivateKeyPemKey,
+              value: pem,
+            );
+            status.value = 'Using ${picked.filename} from ~/.ssh.';
+          }
+        }
+      } catch (_) {
+        // Best-effort.
+      } finally {
+        checkingLocalKeys.value = false;
+      }
+    } else {
+      checkingLocalKeys.value = false;
+    }
+
+    privateKeyPemController.text = pem;
+    hasSavedPrivateKey.value = pem.isNotEmpty;
     if (!hasSavedPrivateKey.value) {
       requiresSshBootstrap.value = false;
     }
