@@ -93,6 +93,7 @@ class FieldExecSessionStore {
 
   /// Stores the remote job identifier, e.g.:
   /// - `tmux:<sessionName>`
+  /// - `tmux:<projectSessionName>:<windowName>`
   /// - `pid:<pid>`
   Future<String?> loadRemoteJobId({
     required String targetKey,
@@ -167,7 +168,9 @@ class FieldExecSessionStore {
     required String tabId,
   }) async {
     final prefs = await SharedPreferences.getInstance();
-    final v = prefs.getString(_logLastLineHashKeyFor(targetKey, projectPath, tabId));
+    final v = prefs.getString(
+      _logLastLineHashKeyFor(targetKey, projectPath, tabId),
+    );
     final trimmed = (v ?? '').trim();
     return trimmed.isEmpty ? null : trimmed;
   }

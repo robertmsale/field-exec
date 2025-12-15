@@ -1059,6 +1059,32 @@ class SessionController extends SessionControllerBase {
     return v;
   }
 
+  String _remoteProjectTmuxSessionName() {
+    // One tmux session per project (remote only), with a stable name so multiple
+    // clients can attach to the same project layout.
+    final h = _fnv1a64Hex('${target.targetKey}|$projectPath');
+    return 'fe_${h.substring(0, 12)}';
+  }
+
+  String _remoteTabTmuxWindowName() {
+    // One tmux window per tab, stable across restarts.
+    final clean = tabId.replaceAll('-', '');
+    final short = clean.length >= 10 ? clean.substring(0, 10) : clean;
+    return 'cr_$short';
+  }
+
+  ({String session, String window})? _parseProjectTmuxJobId(String jobId) {
+    if (!jobId.startsWith('tmux:')) return null;
+    final rest = jobId.substring('tmux:'.length).trim();
+    if (rest.isEmpty) return null;
+    final parts = rest.split(':');
+    if (parts.length < 2) return null;
+    final session = parts[0].trim();
+    final window = parts[1].trim();
+    if (session.isEmpty || window.isEmpty) return null;
+    return (session: session, window: window);
+  }
+
   void _noteLogLineSeen(String line) {
     final h = _fnv1a64Hex(line);
     _logLastLineHash = h;
@@ -2019,8 +2045,9 @@ class SessionController extends SessionControllerBase {
 
       await _startRemoteLogTailIfNeeded(backfillLines: 0);
 
-      final tmuxName =
-          'cr_${tabId.replaceAll('-', '').substring(0, 8)}_${DateTime.now().millisecondsSinceEpoch}';
+      final tmuxSession = _remoteProjectTmuxSessionName();
+      final tmuxWindow = _remoteTabTmuxWindowName();
+      const tmuxServerName = 'field_exec';
 
       final logAbs = _remoteAbsPath(_logRelPath);
       final errAbs = _remoteAbsPath(_stderrLogRelPath);
@@ -2184,9 +2211,16 @@ class SessionController extends SessionControllerBase {
         'fi',
         'rm -f ${_shQuote(jobAbs)} >/dev/null 2>&1 || true',
         'if [ -n "\$TMUX_BIN" ]; then',
-        '  "\$TMUX_BIN" new-session -d -s ${_shQuote(tmuxName)} sh -c ${_shQuote(runBody)}',
-        '  echo "tmux:$tmuxName" > ${_shQuote(jobAbs)}',
-        '  printf %s\\\\n "FIELD_EXEC_JOB=tmux:$tmuxName"',
+        '  SESSION=${_shQuote(tmuxSession)}',
+        '  WINDOW=${_shQuote(tmuxWindow)}',
+        '  if "\$TMUX_BIN" -L $tmuxServerName has-session -t "\$SESSION" >/dev/null 2>&1; then',
+        '    "\$TMUX_BIN" -L $tmuxServerName kill-window -t "\$SESSION:\$WINDOW" >/dev/null 2>&1 || true',
+        '    "\$TMUX_BIN" -L $tmuxServerName new-window -d -t "\$SESSION" -n "\$WINDOW" sh -c ${_shQuote(runBody)}',
+        '  else',
+        '    "\$TMUX_BIN" -L $tmuxServerName new-session -d -s "\$SESSION" -n "\$WINDOW" sh -c ${_shQuote(runBody)}',
+        '  fi',
+        '  echo "tmux:\$SESSION:\$WINDOW" > ${_shQuote(jobAbs)}',
+        '  printf %s\\\\n "FIELD_EXEC_JOB=tmux:\$SESSION:\$WINDOW"',
         'else',
         '  nohup sh -c ${_shQuote(runBody)} >/dev/null 2>&1 &',
         '  pid=\$!',
@@ -2552,18 +2586,34 @@ class SessionController extends SessionControllerBase {
 
     String checkCmd;
     if (stored.startsWith('tmux:')) {
-      final name = stored.substring('tmux:'.length);
-      checkCmd = [
-        'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
-        'TMUX_BIN="\$(command -v tmux 2>/dev/null || true)"',
-        'if [ -z "\$TMUX_BIN" ]; then',
-        '  for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do',
-        '    if [ -x "\$p" ]; then TMUX_BIN="\$p"; break; fi',
-        '  done',
-        'fi',
-        '[ -n "\$TMUX_BIN" ] || exit 127',
-        '"\$TMUX_BIN" has-session -t ${_shQuote(name)}',
-      ].join('\n');
+      final project = _parseProjectTmuxJobId(stored);
+      if (project != null) {
+        checkCmd = [
+          'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
+          'TMUX_BIN="\$(command -v tmux 2>/dev/null || true)"',
+          'if [ -z "\$TMUX_BIN" ]; then',
+          '  for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do',
+          '    if [ -x "\$p" ]; then TMUX_BIN="\$p"; break; fi',
+          '  done',
+          'fi',
+          '[ -n "\$TMUX_BIN" ] || exit 127',
+          '"\$TMUX_BIN" -L field_exec has-session -t ${_shQuote(project.session)}',
+          '"\$TMUX_BIN" -L field_exec list-windows -t ${_shQuote(project.session)} -F \'#W\' | grep -qxF ${_shQuote(project.window)}',
+        ].join('\n');
+      } else {
+        final name = stored.substring('tmux:'.length);
+        checkCmd = [
+          'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
+          'TMUX_BIN="\$(command -v tmux 2>/dev/null || true)"',
+          'if [ -z "\$TMUX_BIN" ]; then',
+          '  for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do',
+          '    if [ -x "\$p" ]; then TMUX_BIN="\$p"; break; fi',
+          '  done',
+          'fi',
+          '[ -n "\$TMUX_BIN" ] || exit 127',
+          '"\$TMUX_BIN" has-session -t ${_shQuote(name)}',
+        ].join('\n');
+      }
     } else if (stored.startsWith('pid:')) {
       final pid = stored.substring('pid:'.length);
       checkCmd = 'kill -0 $pid >/dev/null 2>&1';
@@ -2718,18 +2768,33 @@ class SessionController extends SessionControllerBase {
   Future<void> _stopLocalJob(String job) async {
     String cmd;
     if (job.startsWith('tmux:')) {
-      final name = job.substring('tmux:'.length);
-      cmd = [
-        'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
-        'TMUX_BIN="\$(command -v tmux 2>/dev/null || true)"',
-        'if [ -z "\$TMUX_BIN" ]; then',
-        '  for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do',
-        '    if [ -x "\$p" ]; then TMUX_BIN="\$p"; break; fi',
-        '  done',
-        'fi',
-        '[ -n "\$TMUX_BIN" ] || exit 127',
-        '"\$TMUX_BIN" kill-session -t ${_shQuote(name)} >/dev/null 2>&1 || true',
-      ].join('\n');
+      final project = _parseProjectTmuxJobId(job);
+      if (project != null) {
+        cmd = [
+          'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
+          'TMUX_BIN="\$(command -v tmux 2>/dev/null || true)"',
+          'if [ -z "\$TMUX_BIN" ]; then',
+          '  for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do',
+          '    if [ -x "\$p" ]; then TMUX_BIN="\$p"; break; fi',
+          '  done',
+          'fi',
+          '[ -n "\$TMUX_BIN" ] || exit 127',
+          '"\$TMUX_BIN" -L field_exec kill-window -t ${_shQuote('${project.session}:${project.window}')} >/dev/null 2>&1 || true',
+        ].join('\n');
+      } else {
+        final name = job.substring('tmux:'.length);
+        cmd = [
+          'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
+          'TMUX_BIN="\$(command -v tmux 2>/dev/null || true)"',
+          'if [ -z "\$TMUX_BIN" ]; then',
+          '  for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do',
+          '    if [ -x "\$p" ]; then TMUX_BIN="\$p"; break; fi',
+          '  done',
+          'fi',
+          '[ -n "\$TMUX_BIN" ] || exit 127',
+          '"\$TMUX_BIN" kill-session -t ${_shQuote(name)} >/dev/null 2>&1 || true',
+        ].join('\n');
+      }
     } else if (job.startsWith('pid:')) {
       final pid = job.substring('pid:'.length);
       cmd = 'kill $pid >/dev/null 2>&1 || true';
@@ -2859,18 +2924,34 @@ class SessionController extends SessionControllerBase {
 
       String checkCmd;
       if (stored.startsWith('tmux:')) {
-        final name = stored.substring('tmux:'.length);
-        checkCmd = [
-          'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
-          'TMUX_BIN="\$(command -v tmux 2>/dev/null || true)"',
-          'if [ -z "\$TMUX_BIN" ]; then',
-          '  for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do',
-          '    if [ -x "\$p" ]; then TMUX_BIN="\$p"; break; fi',
-          '  done',
-          'fi',
-          '[ -n "\$TMUX_BIN" ] || exit 127',
-          '"\$TMUX_BIN" has-session -t ${_shQuote(name)}',
-        ].join('\n');
+        final project = _parseProjectTmuxJobId(stored);
+        if (project != null) {
+          checkCmd = [
+            'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
+            'TMUX_BIN="\$(command -v tmux 2>/dev/null || true)"',
+            'if [ -z "\$TMUX_BIN" ]; then',
+            '  for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do',
+            '    if [ -x "\$p" ]; then TMUX_BIN="\$p"; break; fi',
+            '  done',
+            'fi',
+            '[ -n "\$TMUX_BIN" ] || exit 127',
+            '"\$TMUX_BIN" -L field_exec has-session -t ${_shQuote(project.session)}',
+            '"\$TMUX_BIN" -L field_exec list-windows -t ${_shQuote(project.session)} -F \'#W\' | grep -qxF ${_shQuote(project.window)}',
+          ].join('\n');
+        } else {
+          final name = stored.substring('tmux:'.length);
+          checkCmd = [
+            'PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"; export PATH',
+            'TMUX_BIN="\$(command -v tmux 2>/dev/null || true)"',
+            'if [ -z "\$TMUX_BIN" ]; then',
+            '  for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do',
+            '    if [ -x "\$p" ]; then TMUX_BIN="\$p"; break; fi',
+            '  done',
+            'fi',
+            '[ -n "\$TMUX_BIN" ] || exit 127',
+            '"\$TMUX_BIN" has-session -t ${_shQuote(name)}',
+          ].join('\n');
+        }
       } else if (stored.startsWith('pid:')) {
         final pid = stored.substring('pid:'.length);
         checkCmd = 'kill -0 $pid >/dev/null 2>&1';
