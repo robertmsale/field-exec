@@ -1,6 +1,7 @@
 # FieldExec
 
 ![FieldExec logo](assets/logo.png)
+![Screenshot](assets/screenshot.png)
 
 FieldExec is a Flutter app (iOS + Android + macOS) that lets you run Codex CLI “sessions” on your Mac—either **over SSH** (from iOS, Android, or macOS) or **locally** (macOS).
 
