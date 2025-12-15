@@ -10,11 +10,13 @@ import '../models/project_tab.dart';
 import '../session/codex_chat_view.dart';
 import '../session/codex_session_status_bar.dart';
 import '../git/git_tools_sheet.dart';
+import 'project_file_explorer_sheet.dart';
 import 'project_sessions_help_sheet.dart';
 import 'run_command_sheet.dart';
 
 enum _ProjectMenuAction {
   help,
+  files,
   runCommand,
   resumeConversation,
   git,
@@ -57,6 +59,15 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
     );
   }
 
+  Future<void> _showFiles() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (_) => ProjectFileExplorerSheet(controller: controller),
+    );
+  }
+
   Future<void> _showGit() async {
     await showModalBottomSheet<void>(
       context: context,
@@ -88,12 +99,12 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
     final picked = await showModalBottomSheet<Project>(
       context: context,
       showDragHandle: true,
-      builder: (_) => SafeArea(
+      builder: (context) => SafeArea(
         child: ListView.separated(
           padding: const EdgeInsets.all(12),
           itemCount: candidates.length,
-          separatorBuilder: (_, __) => const Divider(height: 1),
-          itemBuilder: (_, i) {
+          separatorBuilder: (context, index) => const Divider(height: 1),
+          itemBuilder: (context, i) {
             final p = candidates[i];
             return ListTile(
               title: Text(p.name),
@@ -129,6 +140,9 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
     switch (action) {
       case _ProjectMenuAction.help:
         await _showHelp();
+        return;
+      case _ProjectMenuAction.files:
+        await _showFiles();
         return;
       case _ProjectMenuAction.runCommand:
         await _showRunCommand();
@@ -355,6 +369,14 @@ class _ProjectSessionsPageState extends State<ProjectSessionsPage>
                   dense: true,
                   leading: Icon(Icons.terminal, size: 18),
                   title: Text('Run command'),
+                ),
+              ),
+              PopupMenuItem<_ProjectMenuAction>(
+                value: _ProjectMenuAction.files,
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(Icons.folder, size: 18),
+                  title: Text('Files'),
                 ),
               ),
               PopupMenuItem<_ProjectMenuAction>(
