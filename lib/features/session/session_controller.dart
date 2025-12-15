@@ -3813,13 +3813,18 @@ class SessionController extends SessionControllerBase {
       return;
     }
 
-    if (type == 'turn.started' ||
-        type == 'turn.completed' ||
-        type == 'turn.failed') {
-      if (type == 'turn.started' && !isRunning.value) {
-        isRunning.value = true;
-        thinkingPreview.value = null;
-        if (!target.local) {
+	    if (type == 'turn.started' ||
+	        type == 'turn.completed' ||
+	        type == 'turn.failed') {
+	      if (type == 'turn.started') {
+	        // Codex item ids (e.g. `item_0`, `item_10`) are not guaranteed to be
+	        // globally unique across turns, so scope deduping to a single turn.
+	        _seenAgentMessageItemIds.clear();
+	      }
+	      if (type == 'turn.started' && !isRunning.value) {
+	        isRunning.value = true;
+	        thinkingPreview.value = null;
+	        if (!target.local) {
           _cancelCurrent ??= () {
             _stopRemoteJob().whenComplete(() {
               _cancelTailOnly();
@@ -4153,13 +4158,17 @@ class SessionController extends SessionControllerBase {
       return const [];
     }
 
-    if (type == 'turn.started' ||
-        type == 'turn.completed' ||
-        type == 'turn.failed') {
-      if (type == 'turn.failed') {
-        final err = event['error']?.toString();
-        final trimmed = err?.trim();
-        return [
+	    if (type == 'turn.started' ||
+	        type == 'turn.completed' ||
+	        type == 'turn.failed') {
+	      if (type == 'turn.started') {
+	        // Same rationale as the live tail path: item ids can repeat per-turn.
+	        _seenAgentMessageItemIds.clear();
+	      }
+	      if (type == 'turn.failed') {
+	        final err = event['error']?.toString();
+	        final trimmed = err?.trim();
+	        return [
           _eventMessage(
             type: 'turn.failed',
             text: trimmed == null || trimmed.isEmpty ? 'Turn failed.' : trimmed,
