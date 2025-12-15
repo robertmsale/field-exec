@@ -48,7 +48,12 @@ class SessionController extends SessionControllerBase {
   void Function()? _cancelCurrent;
   CustomMessage? _pendingActionsMessage;
   String _lastUserPromptPreview = '';
-  String? _sshPassword;
+  // FieldExec uses key-based SSH for normal operation; password auth is only
+  // used for explicit key-install bootstrap flows.
+  //
+  // Keep this non-null to ensure we never show the legacy password prompt
+  // from normal session execution paths.
+  String? _sshPassword = '';
   int _logLineCursor = 0;
   static const _historyPageSizeLines = 400;
   int? _historyRemoteStartLine; // 1-based
@@ -1651,9 +1656,22 @@ class SessionController extends SessionControllerBase {
 
     final profile = target.profile!;
 
-    final pem = await _storage.read(
-      key: SecureStorageService.sshPrivateKeyPemKey,
-    );
+    final pem =
+        (await _storage.read(key: SecureStorageService.sshPrivateKeyPemKey))
+            ?.trim() ??
+        '';
+    if (pem.isEmpty) {
+      await _insertEvent(
+        type: 'error',
+        text: 'SSH key required. Set up a key in Settings → SSH Keys.',
+      );
+      _cancelCurrent = null;
+      isRunning.value = false;
+      thinkingPreview.value = null;
+      remoteJobId.value = null;
+      _remoteJobId = null;
+      return;
+    }
 
     try {
       await _stopRemoteJobBestEffort();

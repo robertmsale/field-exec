@@ -34,7 +34,12 @@ class ProjectSessionsController extends ProjectSessionsControllerBase {
   final isReady = false.obs;
 
   final _uuid = const Uuid();
-  String? _sshPassword;
+  // FieldExec uses key-based SSH for normal operation; password auth is only
+  // used for explicit key-install bootstrap flows.
+  //
+  // Keep this non-null to ensure we never show a password prompt from normal
+  // project/session operations.
+  String? _sshPassword = '';
   Worker? _activeWorker1;
   Worker? _activeWorker2;
 
@@ -675,6 +680,10 @@ done
     final pem = await Get.find<SecureStorageService>().read(
       key: SecureStorageService.sshPrivateKeyPemKey,
     );
+    final keyPem = (pem ?? '').trim();
+    if (keyPem.isEmpty) {
+      throw StateError('SSH key required. Set up a key first.');
+    }
 
     await RustSshService.writeRemoteFile(
       host: profile.host,
@@ -682,17 +691,10 @@ done
       username: profile.username,
       remotePath: '${args.project.path}/$_devInstructionsRelPath',
       contents: text,
-      privateKeyPemOverride: pem,
+      privateKeyPemOverride: keyPem,
       connectTimeout: const Duration(seconds: 10),
       commandTimeout: const Duration(seconds: 30),
-      passwordProvider: () async {
-        if (_sshPassword != null && _sshPassword!.trim().isNotEmpty) {
-          return _sshPassword;
-        }
-        final pw = await _promptForPassword();
-        if (pw != null && pw.trim().isNotEmpty) _sshPassword = pw;
-        return pw;
-      },
+      passwordProvider: null,
     );
   }
 
@@ -786,21 +788,27 @@ done
 
     const timeout = Duration(seconds: 60);
     try {
+      final pem =
+          (await Get.find<SecureStorageService>().read(
+            key: SecureStorageService.sshPrivateKeyPemKey,
+          ))?.trim() ??
+          '';
+      if (pem.isEmpty) {
+        return const RunCommandResult(
+          exitCode: 1,
+          stdout: '',
+          stderr: 'SSH key required. Set up a key first.',
+        );
+      }
       final res = await RustSshService.runCommandWithResult(
         host: profile.host,
         port: profile.port,
         username: profile.username,
         command: _wrapWithShell(profile.shell, remoteCmd),
+        privateKeyPemOverride: pem,
         connectTimeout: const Duration(seconds: 10),
         commandTimeout: timeout,
-        passwordProvider: () async {
-          if (_sshPassword != null && _sshPassword!.trim().isNotEmpty) {
-            return _sshPassword;
-          }
-          final pw = await _promptForPassword();
-          if (pw != null && pw.trim().isNotEmpty) _sshPassword = pw;
-          return pw;
-        },
+        passwordProvider: null,
       );
 
       return RunCommandResult(
@@ -810,6 +818,13 @@ done
       );
     } catch (e) {
       final msg = e.toString();
+      if (msg.contains('Password prompt cancelled')) {
+        return const RunCommandResult(
+          exitCode: 1,
+          stdout: '',
+          stderr: 'SSH key authentication failed. Verify your SSH key is installed and accepted by the server.',
+        );
+      }
       if (msg.contains('timeout')) {
         return const RunCommandResult(
           exitCode: 124,
