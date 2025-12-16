@@ -61,8 +61,7 @@ class CodexSessionStatusBar extends StatelessWidget {
             IconButton(
               tooltip: 'Load older',
               onPressed:
-                  controller.isLoadingMoreHistory.value ||
-                          !controller.hasMoreHistory.value
+                  controller.isLoadingMoreHistory.value
                       ? null
                       : controller.loadMoreHistory,
               icon: controller.isLoadingMoreHistory.value

@@ -351,32 +351,32 @@ class SessionController extends SessionControllerBase {
 
   @override
   Future<void> refresh() async {
-    // Clear the visible chat and then attempt to rehydrate + reattach to the
-    // active log tail (useful after backgrounding/disconnects or duplication).
+    // Rehydrate + reattach to the active log tail (useful after backgrounding/
+    // disconnects or duplication). Do not clear the current chat first: if the
+    // rehydrate fails (e.g. very large logs), clearing would leave an empty UI.
     _repairedExplodedChat = false;
     _pendingActionsMessage = null;
     isLoadingMoreHistory.value = false;
-    hasMoreHistory.value = false;
     _historyLogRelPath = _logRelPath;
     _historyFocusThreadId = null;
     _historyRemoteStartLine = null;
     _historyLocalStartIndex = null;
-    _needsScrollToBottom.value = false;
 
     if (!target.local) _cancelTailOnly();
     if (target.local) _cancelLocalTailOnly();
 
     try {
-      await chatController.setMessages([], animated: false);
-    } catch (_) {}
-
-    try {
       if (target.local) {
-        await _rehydrateFromLocalLog(maxLines: _scrollbackLines, logRelPath: _logRelPath);
+        await _rehydrateFromLocalLog(
+          maxLines: _scrollbackLines,
+          logRelPath: _logRelPath,
+        );
       } else {
         await _rehydrateFromRemoteLog(maxLines: _scrollbackLines);
       }
-    } catch (_) {}
+    } catch (e) {
+      await _insertEvent(type: 'error', text: 'Refresh failed: $e');
+    }
 
     try {
       await reattachIfNeeded(backfillLines: 0);
@@ -386,7 +386,6 @@ class SessionController extends SessionControllerBase {
   @override
   Future<void> loadMoreHistory() async {
     if (isLoadingMoreHistory.value) return;
-    if (!hasMoreHistory.value) return;
 
     isLoadingMoreHistory.value = true;
     try {
@@ -419,16 +418,20 @@ class SessionController extends SessionControllerBase {
           return;
         }
 
-        final contents = await file.readAsString();
-        final lines = const LineSplitter().convert(contents);
-        if (lines.isEmpty) {
+        final totalLines = await _localLineCount(absPath: logPath);
+        if (totalLines <= 0) {
           hasMoreHistory.value = false;
           return;
         }
 
-        final currentStart = (_historyLocalStartIndex ?? lines.length).clamp(
+        // If we haven't initialized pagination yet, assume the current visible
+        // region corresponds to the last configured scrollback window.
+        _historyLocalStartIndex ??=
+            (totalLines - _scrollbackLines).clamp(0, totalLines);
+
+        final currentStart = (_historyLocalStartIndex ?? totalLines).clamp(
           0,
-          lines.length,
+          totalLines,
         );
         if (currentStart <= 0) {
           hasMoreHistory.value = false;
@@ -439,8 +442,18 @@ class SessionController extends SessionControllerBase {
           0,
           currentStart,
         );
-        final chunk = lines.sublist(newStart, currentStart);
-        if (chunk.isEmpty) {
+        if (newStart >= currentStart) {
+          hasMoreHistory.value = newStart > 0;
+          _historyLocalStartIndex = newStart;
+          return;
+        }
+
+        final cmd =
+            'sed -n \'${newStart + 1},${currentStart}p\' ${_shQuote(logPath)} 2>/dev/null || true';
+        final res = await Process.run('/bin/sh', ['-c', cmd]);
+        final chunkLines =
+            const LineSplitter().convert((res.stdout as Object?)?.toString() ?? '');
+        if (chunkLines.isEmpty) {
           hasMoreHistory.value = newStart > 0;
           _historyLocalStartIndex = newStart;
           return;
@@ -448,13 +461,13 @@ class SessionController extends SessionControllerBase {
 
         final foundThreadStart = focusThreadId == null
             ? false
-            : _containsThreadStart(chunk, focusThreadId);
+            : _containsThreadStart(chunkLines, focusThreadId);
         final focusStart = focusThreadId == null
             ? 0
-            : _findFocusStartIndex(chunk, focusThreadId);
+            : _findFocusStartIndex(chunkLines, focusThreadId);
         final relevant = (focusThreadId != null && foundThreadStart)
-            ? chunk.skip(focusStart)
-            : chunk;
+            ? chunkLines.skip(focusStart)
+            : chunkLines;
         final relevantList = relevant is List<String>
             ? relevant
             : relevant.toList();
@@ -493,8 +506,21 @@ class SessionController extends SessionControllerBase {
         return;
       }
 
-      final startLine = _historyRemoteStartLine;
-      if (startLine == null || startLine <= 1) {
+      final logAbs = _remoteAbsPath(logRelPath);
+      var startLine = _historyRemoteStartLine;
+      if (startLine == null) {
+        // Initialize pagination relative to the last configured scrollback.
+        final totalLines = await _remoteLineCount(absPath: logAbs);
+        final tailLen = _scrollbackLines.clamp(0, totalLines);
+        final tailStartLine = (totalLines - tailLen + 1).clamp(
+          1,
+          totalLines == 0 ? 1 : totalLines,
+        );
+        startLine = tailStartLine;
+        _historyRemoteStartLine = tailStartLine;
+        hasMoreHistory.value = tailStartLine > 1;
+      }
+      if (startLine <= 1) {
         hasMoreHistory.value = false;
         return;
       }
@@ -504,7 +530,6 @@ class SessionController extends SessionControllerBase {
         1,
         endLine,
       );
-      final logAbs = _remoteAbsPath(logRelPath);
       final cmdBody = [
         'if [ -f ${_shQuote(logAbs)} ]; then',
         '  sed -n \'$newStartLine,${endLine}p\' ${_shQuote(logAbs)} 2>/dev/null || true',
@@ -580,6 +605,13 @@ class SessionController extends SessionControllerBase {
     } finally {
       isLoadingMoreHistory.value = false;
     }
+  }
+
+  Future<int> _localLineCount({required String absPath}) async {
+    final script =
+        'if [ -f ${_shQuote(absPath)} ]; then wc -l ${_shQuote(absPath)} 2>/dev/null | sed \'s/^[[:space:]]*\\\\([0-9][0-9]*\\\\).*/\\\\1/\'; else echo 0; fi';
+    final res = await Process.run('/bin/sh', ['-c', script]);
+    return _parseWcLineCount((res.stdout as Object?)?.toString() ?? '');
   }
 
   @override
@@ -3627,9 +3659,8 @@ class SessionController extends SessionControllerBase {
       return;
     }
 
-    final contents = await file.readAsString();
-    final lines = const LineSplitter().convert(contents);
-    if (lines.isEmpty) {
+    final totalLines = await _localLineCount(absPath: logPath);
+    if (totalLines <= 0) {
       _historyLogRelPath = logRelPath;
       _historyFocusThreadId = focusThreadId;
       _historyLocalStartIndex = null;
@@ -3637,12 +3668,22 @@ class SessionController extends SessionControllerBase {
       return;
     }
 
-    final tail = lines.length <= maxLines
-        ? lines
-        : lines.sublist(lines.length - maxLines);
+    final cmd =
+        'tail -n $maxLines ${_shQuote(logPath)} 2>/dev/null || true';
+    final res = await Process.run('/bin/sh', ['-c', cmd]);
+    final tail = const LineSplitter()
+        .convert((res.stdout as Object?)?.toString() ?? '');
+    if (tail.isEmpty) {
+      _historyLogRelPath = logRelPath;
+      _historyFocusThreadId = focusThreadId;
+      _historyLocalStartIndex = null;
+      hasMoreHistory.value = false;
+      return;
+    }
+
     _historyLogRelPath = logRelPath;
     _historyFocusThreadId = focusThreadId;
-    final tailStartIndex = (lines.length - tail.length).clamp(0, lines.length);
+    final tailStartIndex = (totalLines - tail.length).clamp(0, totalLines);
     for (final line in tail) {
       if (line.trim().isNotEmpty) _rememberRecentLogLine(line);
     }
