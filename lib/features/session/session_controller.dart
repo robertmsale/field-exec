@@ -73,6 +73,8 @@ class SessionController extends SessionControllerBase {
   Future<void> _cursorSaveQueue = Future.value();
   Timer? _hashSaveTimer;
   Future<void> _hashSaveQueue = Future.value();
+  Future<void> _imageLoadQueue = Future.value();
+  final _pendingImageLoads = <String>{};
   Timer? _remoteSshHealthTimer;
   var _remoteSshHealthInFlight = false;
   var _remoteSshHealthFailures = 0;
@@ -1047,6 +1049,71 @@ class SessionController extends SessionControllerBase {
 
   @override
   Future<void> loadImageAttachment(CustomMessage message, {int? index}) async {
+    final kind = (message.metadata ?? const {})['kind']?.toString();
+    if (kind != 'codex_image' && kind != 'codex_image_grid') return;
+
+    // Serialize loads to avoid concurrent metadata update races (e.g. tapping
+    // two images quickly in a grid). Without this, each load can clone and
+    // overwrite stale metadata, leaving earlier items stuck in "loading".
+    if (kind == 'codex_image') {
+      await _enqueueImageLoad(messageId: message.id, index: null);
+      return;
+    }
+
+    // Grid
+    if (index != null) {
+      await _enqueueImageLoad(messageId: message.id, index: index);
+      return;
+    }
+
+    // Load all (best-effort, sequential).
+    final latest = _findCustomMessageById(message.id);
+    final rawImages = latest?.metadata?['images'];
+    if (rawImages is! List) return;
+    for (var i = 0; i < rawImages.length; i++) {
+      await _enqueueImageLoad(messageId: message.id, index: i);
+    }
+  }
+
+  CustomMessage? _findCustomMessageById(String id) {
+    try {
+      for (final m in chatController.messages) {
+        if (m.id != id) continue;
+        if (m is CustomMessage) return m;
+        final kind = (m.metadata ?? const {})['kind']?.toString();
+        if (kind == null) return null;
+        return m.mapOrNull(custom: (c) => c) as CustomMessage?;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<void> _enqueueImageLoad({
+    required String messageId,
+    required int? index,
+  }) async {
+    final key = index == null ? '$messageId:single' : '$messageId:$index';
+    if (_pendingImageLoads.contains(key)) return;
+    _pendingImageLoads.add(key);
+
+    final completer = Completer<void>();
+    _imageLoadQueue = _imageLoadQueue.then((_) async {
+      if (isClosed) return;
+      await _processImageLoad(messageId: messageId, index: index);
+    }).whenComplete(() {
+      _pendingImageLoads.remove(key);
+      if (!completer.isCompleted) completer.complete();
+    });
+
+    await completer.future;
+  }
+
+  Future<void> _processImageLoad({
+    required String messageId,
+    required int? index,
+  }) async {
+    final message = _findCustomMessageById(messageId);
+    if (message == null) return;
     final meta = message.metadata ?? const {};
     final kind = meta['kind']?.toString();
     if (kind == 'codex_image') {
@@ -1083,62 +1150,52 @@ class SessionController extends SessionControllerBase {
     }
 
     if (kind != 'codex_image_grid') return;
+    if (index == null) return;
 
     final rawImages = meta['images'];
     if (rawImages is! List) return;
-    final images = rawImages
+    if (index < 0 || index >= rawImages.length) return;
+    final items = rawImages
         .whereType<Map>()
         .map((m) => Map<String, Object?>.from(m))
-        .toList();
-    if (images.isEmpty) return;
+        .toList(growable: false);
+    if (index >= items.length) return;
 
-    final indices = <int>[];
-    if (index != null) {
-      if (index < 0 || index >= images.length) return;
-      indices.add(index);
-    } else {
-      for (var i = 0; i < images.length; i++) {
-        indices.add(i);
-      }
+    final entry = items[index];
+    final existingBytes = entry['bytes'];
+    if (existingBytes is Uint8List && existingBytes.isNotEmpty) return;
+
+    final status = entry['status']?.toString() ?? '';
+    if (status == 'loading') return;
+
+    String rawPath = entry['path']?.toString() ?? '';
+    if (rawPath.trim().isEmpty) return;
+
+    rawPath = _normalizeWorkspacePath(rawPath);
+    if (!_isPathWithinWorkspace(rawPath)) {
+      await _updateImageGridMessage(
+        message,
+        index,
+        status: 'error',
+        error: 'Image path is outside the workspace.',
+      );
+      return;
     }
 
-    for (final i in indices) {
-      final entry = images[i];
-      final existingBytes = entry['bytes'];
-      if (existingBytes is Uint8List && existingBytes.isNotEmpty) continue;
+    await _updateImageGridMessage(message, index, status: 'loading');
 
-      final status = entry['status']?.toString() ?? '';
-      if (status == 'loading') continue;
-
-      String rawPath = entry['path']?.toString() ?? '';
-      if (rawPath.trim().isEmpty) continue;
-
-      rawPath = _normalizeWorkspacePath(rawPath);
-      if (!_isPathWithinWorkspace(rawPath)) {
-        await _updateImageGridMessage(
-          message,
-          i,
-          status: 'error',
-          error: 'Image path is outside the workspace.',
-        );
-        continue;
-      }
-
-      await _updateImageGridMessage(message, i, status: 'loading');
-
-      try {
-        final bytes = target.local
-            ? await _readLocalImageBytes(rawPath)
-            : await _readRemoteImageBytes(rawPath);
-        await _updateImageGridMessage(
-          message,
-          i,
-          status: 'loaded',
-          bytes: bytes,
-        );
-      } catch (e) {
-        await _updateImageGridMessage(message, i, status: 'error', error: '$e');
-      }
+    try {
+      final bytes = target.local
+          ? await _readLocalImageBytes(rawPath)
+          : await _readRemoteImageBytes(rawPath);
+      await _updateImageGridMessage(
+        message,
+        index,
+        status: 'loaded',
+        bytes: bytes,
+      );
+    } catch (e) {
+      await _updateImageGridMessage(message, index, status: 'error', error: '$e');
     }
   }
 
