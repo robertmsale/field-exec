@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -457,11 +458,11 @@ class SessionController extends SessionControllerBase {
             return;
           }
 
-          final cmd =
-              'sed -n \'${newStart + 1},${currentStart}p\' ${_shQuote(logPath)} 2>/dev/null || true';
-          final res = await Process.run('/bin/sh', ['-c', cmd]);
-          final chunkLines = const LineSplitter()
-              .convert((res.stdout as Object?)?.toString() ?? '');
+          final chunkLines = await _readLocalLineRange(
+            absPath: logPath,
+            startLineInclusive1Based: newStart + 1,
+            endLineInclusive1Based: currentStart,
+          );
 
           if (chunkLines.isEmpty) {
             _historyLocalStartIndex = newStart;
@@ -621,10 +622,110 @@ class SessionController extends SessionControllerBase {
   }
 
   Future<int> _localLineCount({required String absPath}) async {
-    final script =
-        'if [ -f ${_shQuote(absPath)} ]; then wc -l ${_shQuote(absPath)} 2>/dev/null | sed \'s/^[[:space:]]*\\\\([0-9][0-9]*\\\\).*/\\\\1/\'; else echo 0; fi';
-    final res = await Process.run('/bin/sh', ['-c', script]);
-    return _parseWcLineCount((res.stdout as Object?)?.toString() ?? '');
+    final file = File(absPath);
+    if (!await file.exists()) return 0;
+
+    // Fast-path: use wc if available (can be disabled/unsupported on some
+    // sandboxed/mobile targets).
+    try {
+      final script =
+          'wc -l ${_shQuote(absPath)} 2>/dev/null | sed \'s/^[[:space:]]*\\\\([0-9][0-9]*\\\\).*/\\\\1/\'';
+      final res = await Process.run('/bin/sh', ['-c', script]);
+      final parsed = _parseWcLineCount((res.stdout as Object?)?.toString() ?? '');
+      final size = await file.length();
+      if (parsed > 0 || size == 0) return parsed;
+    } catch (_) {
+      // Fall back to pure Dart counting.
+    }
+
+    var count = 0;
+    try {
+      await for (final _ in file
+          .openRead()
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())) {
+        count++;
+      }
+    } catch (_) {
+      return 0;
+    }
+    return count;
+  }
+
+  Future<List<String>> _readLocalTailLines({
+    required String absPath,
+    required int maxLines,
+  }) async {
+    final file = File(absPath);
+    if (!await file.exists()) return const [];
+
+    try {
+      final cmd = 'tail -n $maxLines ${_shQuote(absPath)} 2>/dev/null || true';
+      final res = await Process.run('/bin/sh', ['-c', cmd]);
+      final out = const LineSplitter()
+          .convert((res.stdout as Object?)?.toString() ?? '');
+      final size = await file.length();
+      if (out.isNotEmpty || size == 0) return out;
+    } catch (_) {
+      // Fall back below.
+    }
+
+    final buf = ListQueue<String>();
+    try {
+      await for (final line in file
+          .openRead()
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())) {
+        buf.add(line);
+        while (buf.length > maxLines) {
+          buf.removeFirst();
+        }
+      }
+    } catch (_) {
+      return const [];
+    }
+    return buf.toList(growable: false);
+  }
+
+  Future<List<String>> _readLocalLineRange({
+    required String absPath,
+    required int startLineInclusive1Based,
+    required int endLineInclusive1Based,
+  }) async {
+    if (startLineInclusive1Based > endLineInclusive1Based) return const [];
+    final file = File(absPath);
+    if (!await file.exists()) return const [];
+
+    // Try sed first (fast on large logs).
+    try {
+      final cmd =
+          'sed -n \'${startLineInclusive1Based},${endLineInclusive1Based}p\' ${_shQuote(absPath)} 2>/dev/null || true';
+      final res = await Process.run('/bin/sh', ['-c', cmd]);
+      final out = const LineSplitter()
+          .convert((res.stdout as Object?)?.toString() ?? '');
+      // If the range exists but contains only blank lines, LineSplitter will
+      // still return entries, so empty output is a decent signal of failure.
+      if (out.isNotEmpty) return out;
+    } catch (_) {
+      // Fall back below.
+    }
+
+    final out = <String>[];
+    var lineNo = 0;
+    try {
+      await for (final line in file
+          .openRead()
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())) {
+        lineNo++;
+        if (lineNo < startLineInclusive1Based) continue;
+        if (lineNo > endLineInclusive1Based) break;
+        out.add(line);
+      }
+    } catch (_) {
+      return const [];
+    }
+    return out;
   }
 
   @override
@@ -1186,8 +1287,11 @@ class SessionController extends SessionControllerBase {
       } else {
         await _maybeReattachLocal();
       }
-    } catch (_) {
-      // Best-effort.
+    } catch (e) {
+      // Surface init failures; otherwise the chat can appear silently empty.
+      try {
+        await _insertEvent(type: 'init_failed', text: e.toString());
+      } catch (_) {}
     }
   }
 
@@ -1372,6 +1476,19 @@ class SessionController extends SessionControllerBase {
       }
 
       await _rehydrateFromLocalLog(maxLines: _scrollbackLines, logRelPath: _logRelPath);
+      // Fallback: if the tab log is missing/mismatched but we have a stored
+      // thread id, try to locate the matching log in this project's sessions.
+      if (chatController.messages.isEmpty) {
+        final tid = (threadId.value ?? '').trim();
+        if (tid.isNotEmpty) {
+          try {
+            await _rehydrateFromAnyLogForThread(
+              threadId: tid,
+              maxLines: _scrollbackLines,
+            );
+          } catch (_) {}
+        }
+      }
       // If the job finished while the app was backgrounded/terminated, we may
       // have missed >200 lines; replay any unseen log lines using the cursor.
       try {
@@ -1414,8 +1531,13 @@ class SessionController extends SessionControllerBase {
         isRunning.value = false;
         thinkingPreview.value = null;
       }
-    } catch (_) {
-      // Best-effort.
+    } catch (e) {
+      try {
+        await _insertEvent(
+          type: 'reattach_failed',
+          text: 'Local reattach/rehydrate failed: $e',
+        );
+      } catch (_) {}
     }
   }
 
@@ -3130,6 +3252,19 @@ class SessionController extends SessionControllerBase {
       remoteJobId.value = stored;
 
       await _rehydrateFromRemoteLog(maxLines: _scrollbackLines);
+      // Fallback: if we couldn't replay anything from the tab log but we have a
+      // stored thread id, attempt to locate the thread across project logs.
+      if (chatController.messages.isEmpty) {
+        final tid = (threadId.value ?? '').trim();
+        if (tid.isNotEmpty) {
+          try {
+            await _rehydrateFromAnyLogForThread(
+              threadId: tid,
+              maxLines: _scrollbackLines,
+            );
+          } catch (_) {}
+        }
+      }
       // If the job finished while the app was backgrounded/terminated, we may
       // have missed >200 lines; replay any unseen log lines using the cursor.
       try {
@@ -3380,8 +3515,10 @@ class SessionController extends SessionControllerBase {
         _needsScrollToBottom.value = true;
       }
       await _maybeCatchUpAutoCommitFromHydratedLog(lines: lines, startIndex: 0);
-    } catch (_) {
-      // Best-effort.
+    } catch (e) {
+      try {
+        await _insertEvent(type: 'rehydrate_failed', text: e.toString());
+      } catch (_) {}
     }
   }
 
@@ -3668,6 +3805,24 @@ class SessionController extends SessionControllerBase {
       _historyFocusThreadId = focusThreadId;
       _historyLocalStartIndex = null;
       hasMoreHistory.value = false;
+      // If we expected history here but the log is missing, surface a hint.
+      try {
+        final sessionsDir = Directory(_joinPosix(projectPath, _sessionsDirRelPath));
+        if (await sessionsDir.exists()) {
+          final logs = await sessionsDir
+              .list()
+              .where((e) => e is File && e.path.endsWith('.log'))
+              .take(6)
+              .toList();
+          if (logs.isNotEmpty) {
+            await _insertEvent(
+              type: 'log_missing',
+              text:
+                  'Log not found: $logRelPath (tabId=$tabId). Found ${logs.length} other .log files under $_sessionsDirRelPath.',
+            );
+          }
+        }
+      } catch (_) {}
       return;
     }
 
@@ -3680,16 +3835,21 @@ class SessionController extends SessionControllerBase {
       return;
     }
 
-    final cmd =
-        'tail -n $maxLines ${_shQuote(logPath)} 2>/dev/null || true';
-    final res = await Process.run('/bin/sh', ['-c', cmd]);
-    final tail = const LineSplitter()
-        .convert((res.stdout as Object?)?.toString() ?? '');
+    final tail = await _readLocalTailLines(absPath: logPath, maxLines: maxLines);
     if (tail.isEmpty) {
       _historyLogRelPath = logRelPath;
       _historyFocusThreadId = focusThreadId;
       _historyLocalStartIndex = null;
       hasMoreHistory.value = false;
+      try {
+        final size = await file.length();
+        if (size > 0) {
+          await _insertEvent(
+            type: 'rehydrate_failed',
+            text: 'Failed to read any lines from $logRelPath (size=${size}B).',
+          );
+        }
+      } catch (_) {}
       return;
     }
 
