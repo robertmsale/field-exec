@@ -121,7 +121,10 @@ class SessionController extends SessionControllerBase {
   ActiveSessionService get _activeSession => Get.find<ActiveSessionService>();
   AppLifecycleService get _lifecycle => Get.find<AppLifecycleService>();
   RemoteJobsStore get _remoteJobs => Get.find<RemoteJobsStore>();
-  SessionScrollbackService get _scrollback => Get.find<SessionScrollbackService>();
+  SessionScrollbackService? get _scrollbackOrNull =>
+      Get.isRegistered<SessionScrollbackService>()
+          ? Get.find<SessionScrollbackService>()
+          : null;
 
   static const _me = 'user';
   static const _codex = 'codex';
@@ -132,8 +135,9 @@ class SessionController extends SessionControllerBase {
   static const _serverGitignoreBootstrapType = 'server.gitignore_bootstrap';
   static const _maxImageBytes = 10 * 1024 * 1024;
 
-  int get _scrollbackLines =>
-      SessionScrollbackService.clampLines(_scrollback.lines);
+  int get _scrollbackLines => SessionScrollbackService.clampLines(
+        _scrollbackOrNull?.lines ?? SessionScrollbackService.defaultLines,
+      );
 
   @override
   void onInit() {
@@ -429,48 +433,165 @@ class SessionController extends SessionControllerBase {
         _historyLocalStartIndex ??=
             (totalLines - _scrollbackLines).clamp(0, totalLines);
 
-        final currentStart = (_historyLocalStartIndex ?? totalLines).clamp(
-          0,
-          totalLines,
-        );
+        final focus = (focusThreadId ?? '').trim();
+        final isFocus = focus.isNotEmpty;
+
+        var currentStart = (_historyLocalStartIndex ?? totalLines)
+            .clamp(0, totalLines)
+            .toInt();
         if (currentStart <= 0) {
           hasMoreHistory.value = false;
           return;
         }
 
-        final newStart = (currentStart - _historyPageSizeLines).clamp(
-          0,
-          currentStart,
-        );
-        if (newStart >= currentStart) {
-          hasMoreHistory.value = newStart > 0;
-          _historyLocalStartIndex = newStart;
+        // In focus mode, a single page may contain only blank lines or
+        // unrelated sessions; keep paging backward until we find focused
+        // content or reach the beginning of the log.
+        for (var attempt = 0; attempt < 6 && currentStart > 0; attempt++) {
+          final newStart = (currentStart - _historyPageSizeLines)
+              .clamp(0, currentStart)
+              .toInt();
+          if (newStart >= currentStart) {
+            _historyLocalStartIndex = newStart;
+            hasMoreHistory.value = newStart > 0;
+            return;
+          }
+
+          final cmd =
+              'sed -n \'${newStart + 1},${currentStart}p\' ${_shQuote(logPath)} 2>/dev/null || true';
+          final res = await Process.run('/bin/sh', ['-c', cmd]);
+          final chunkLines = const LineSplitter()
+              .convert((res.stdout as Object?)?.toString() ?? '');
+
+          if (chunkLines.isEmpty) {
+            _historyLocalStartIndex = newStart;
+            hasMoreHistory.value = newStart > 0;
+            currentStart = newStart;
+            if (!isFocus) return;
+            continue;
+          }
+
+          if (isFocus && !_containsThreadId(chunkLines, focus)) {
+            _historyLocalStartIndex = newStart;
+            hasMoreHistory.value = newStart > 0;
+            currentStart = newStart;
+            continue;
+          }
+
+          final focusStart = isFocus ? _findFocusStartIndex(chunkLines, focus) : 0;
+          final relevantList =
+              isFocus ? chunkLines.skip(focusStart).toList() : chunkLines;
+
+          for (final l in relevantList) {
+            if (l.trim().isNotEmpty) _rememberRecentLogLine(l);
+          }
+
+          final older = await materializeLines(relevantList);
+          if (older.isNotEmpty) {
+            await chatController.insertAllMessages(
+              older,
+              index: 0,
+              animated: false,
+            );
+            await _applyRecordedQuickReplySelectionsToChat();
+          }
+
+          _historyLocalStartIndex = isFocus ? (newStart + focusStart) : newStart;
+          hasMoreHistory.value = (_historyLocalStartIndex ?? 0) > 0;
           return;
         }
 
-        final cmd =
-            'sed -n \'${newStart + 1},${currentStart}p\' ${_shQuote(logPath)} 2>/dev/null || true';
-        final res = await Process.run('/bin/sh', ['-c', cmd]);
-        final chunkLines =
-            const LineSplitter().convert((res.stdout as Object?)?.toString() ?? '');
+        _historyLocalStartIndex = 0;
+        hasMoreHistory.value = false;
+        return;
+      }
+
+      // Remote
+      final profile = target.profile!;
+      final pem = await _storage.read(
+        key: SecureStorageService.sshPrivateKeyPemKey,
+      );
+      if (pem == null || pem.trim().isEmpty) {
+        hasMoreHistory.value = false;
+        return;
+      }
+
+      final logAbs = _remoteAbsPath(logRelPath);
+      var startLine = _historyRemoteStartLine ?? 0;
+      if (startLine <= 0) {
+        // Initialize pagination relative to the last configured scrollback.
+        final totalLines = await _remoteLineCount(absPath: logAbs);
+        final tailLen = _scrollbackLines.clamp(0, totalLines).toInt();
+        final tailStartLine = (totalLines - tailLen + 1)
+            .clamp(1, totalLines == 0 ? 1 : totalLines)
+            .toInt();
+        startLine = tailStartLine;
+        _historyRemoteStartLine = tailStartLine;
+        hasMoreHistory.value = tailStartLine > 1;
+      }
+      if (startLine <= 1) {
+        hasMoreHistory.value = false;
+        return;
+      }
+
+      final focus = (focusThreadId ?? '').trim();
+      final isFocus = focus.isNotEmpty;
+
+      for (var attempt = 0; attempt < 6 && startLine > 1; attempt++) {
+        final endLine = startLine - 1;
+        final newStartLine = (endLine - _historyPageSizeLines + 1)
+            .clamp(1, endLine)
+            .toInt();
+        final cmdBody = [
+          'if [ -f ${_shQuote(logAbs)} ]; then',
+          '  sed -n \'$newStartLine,${endLine}p\' ${_shQuote(logAbs)} 2>/dev/null || true',
+          'fi',
+        ].join('\n');
+
+        Future<SshCommandResult> runOnce({String? password}) {
+          return _ssh.runCommandWithResult(
+            host: profile.host,
+            port: profile.port,
+            username: profile.username,
+            privateKeyPem: pem,
+            password: password,
+            command: _wrapWithShell(profile, cmdBody),
+          );
+        }
+
+        SshCommandResult res;
+        try {
+          res = await runOnce(password: _sshPassword);
+        } catch (_) {
+          if (_sshPassword == null) {
+            final pw = await _promptForPassword();
+            if (pw == null || pw.isEmpty) rethrow;
+            _sshPassword = pw;
+            res = await runOnce(password: _sshPassword);
+          } else {
+            rethrow;
+          }
+        }
+
+        final chunkLines = const LineSplitter().convert(res.stdout);
         if (chunkLines.isEmpty) {
-          hasMoreHistory.value = newStart > 0;
-          _historyLocalStartIndex = newStart;
-          return;
+          _historyRemoteStartLine = newStartLine;
+          hasMoreHistory.value = newStartLine > 1;
+          startLine = newStartLine;
+          if (!isFocus) return;
+          continue;
         }
 
-        final foundThreadStart = focusThreadId == null
-            ? false
-            : _containsThreadStart(chunkLines, focusThreadId);
-        final focusStart = focusThreadId == null
-            ? 0
-            : _findFocusStartIndex(chunkLines, focusThreadId);
-        final relevant = (focusThreadId != null && foundThreadStart)
-            ? chunkLines.skip(focusStart)
-            : chunkLines;
-        final relevantList = relevant is List<String>
-            ? relevant
-            : relevant.toList();
+        if (isFocus && !_containsThreadId(chunkLines, focus)) {
+          _historyRemoteStartLine = newStartLine;
+          hasMoreHistory.value = newStartLine > 1;
+          startLine = newStartLine;
+          continue;
+        }
+
+        final focusStart = isFocus ? _findFocusStartIndex(chunkLines, focus) : 0;
+        final relevantList =
+            isFocus ? chunkLines.skip(focusStart).toList() : chunkLines;
 
         for (final l in relevantList) {
           if (l.trim().isNotEmpty) _rememberRecentLogLine(l);
@@ -486,122 +607,14 @@ class SessionController extends SessionControllerBase {
           await _applyRecordedQuickReplySelectionsToChat();
         }
 
-        if (focusThreadId != null && foundThreadStart) {
-          _historyLocalStartIndex = newStart + focusStart;
-          hasMoreHistory.value = false;
-        } else {
-          _historyLocalStartIndex = newStart;
-          hasMoreHistory.value = newStart > 0;
-        }
+        _historyRemoteStartLine =
+            isFocus ? (newStartLine + focusStart) : newStartLine;
+        hasMoreHistory.value = (_historyRemoteStartLine ?? 1) > 1;
         return;
       }
 
-      // Remote
-      final profile = target.profile!;
-      final pem = await _storage.read(
-        key: SecureStorageService.sshPrivateKeyPemKey,
-      );
-      if (pem == null || pem.trim().isEmpty) {
-        hasMoreHistory.value = false;
-        return;
-      }
-
-      final logAbs = _remoteAbsPath(logRelPath);
-      var startLine = _historyRemoteStartLine;
-      if (startLine == null) {
-        // Initialize pagination relative to the last configured scrollback.
-        final totalLines = await _remoteLineCount(absPath: logAbs);
-        final tailLen = _scrollbackLines.clamp(0, totalLines);
-        final tailStartLine = (totalLines - tailLen + 1).clamp(
-          1,
-          totalLines == 0 ? 1 : totalLines,
-        );
-        startLine = tailStartLine;
-        _historyRemoteStartLine = tailStartLine;
-        hasMoreHistory.value = tailStartLine > 1;
-      }
-      if (startLine <= 1) {
-        hasMoreHistory.value = false;
-        return;
-      }
-
-      final endLine = startLine - 1;
-      final newStartLine = (endLine - _historyPageSizeLines + 1).clamp(
-        1,
-        endLine,
-      );
-      final cmdBody = [
-        'if [ -f ${_shQuote(logAbs)} ]; then',
-        '  sed -n \'$newStartLine,${endLine}p\' ${_shQuote(logAbs)} 2>/dev/null || true',
-        'fi',
-      ].join('\n');
-
-      Future<SshCommandResult> runOnce({String? password}) {
-        return _ssh.runCommandWithResult(
-          host: profile.host,
-          port: profile.port,
-          username: profile.username,
-          privateKeyPem: pem,
-          password: password,
-          command: _wrapWithShell(profile, cmdBody),
-        );
-      }
-
-      SshCommandResult res;
-      try {
-        res = await runOnce(password: _sshPassword);
-      } catch (_) {
-        if (_sshPassword == null) {
-          final pw = await _promptForPassword();
-          if (pw == null || pw.isEmpty) rethrow;
-          _sshPassword = pw;
-          res = await runOnce(password: _sshPassword);
-        } else {
-          rethrow;
-        }
-      }
-
-      final chunkLines = const LineSplitter().convert(res.stdout);
-      if (chunkLines.isEmpty) {
-        hasMoreHistory.value = newStartLine > 1;
-        _historyRemoteStartLine = newStartLine;
-        return;
-      }
-
-      final foundThreadStart = focusThreadId == null
-          ? false
-          : _containsThreadStart(chunkLines, focusThreadId);
-      final focusStart = focusThreadId == null
-          ? 0
-          : _findFocusStartIndex(chunkLines, focusThreadId);
-      final relevant = (focusThreadId != null && foundThreadStart)
-          ? chunkLines.skip(focusStart)
-          : chunkLines;
-      final relevantList = relevant is List<String>
-          ? relevant
-          : relevant.toList();
-
-      for (final l in relevantList) {
-        if (l.trim().isNotEmpty) _rememberRecentLogLine(l);
-      }
-
-      final older = await materializeLines(relevantList);
-      if (older.isNotEmpty) {
-        await chatController.insertAllMessages(
-          older,
-          index: 0,
-          animated: false,
-        );
-        await _applyRecordedQuickReplySelectionsToChat();
-      }
-
-      if (focusThreadId != null && foundThreadStart) {
-        _historyRemoteStartLine = newStartLine + focusStart;
-        hasMoreHistory.value = false;
-      } else {
-        _historyRemoteStartLine = newStartLine;
-        hasMoreHistory.value = newStartLine > 1;
-      }
+      _historyRemoteStartLine = 1;
+      hasMoreHistory.value = false;
     } finally {
       isLoadingMoreHistory.value = false;
     }
@@ -3332,10 +3345,9 @@ class SessionController extends SessionControllerBase {
         break;
       }
 
-      final tailStartLine = (totalLines - lines.length + 1).clamp(
-        1,
-        totalLines == 0 ? 1 : totalLines,
-      );
+      final tailStartLine = (totalLines - lines.length + 1)
+          .clamp(1, totalLines == 0 ? 1 : totalLines)
+          .toInt();
       _historyRemoteStartLine = tailStartLine;
       hasMoreHistory.value = tailStartLine > 1;
 
@@ -3601,18 +3613,18 @@ class SessionController extends SessionControllerBase {
       if (line.trim().isNotEmpty) _rememberRecentLogLine(line);
     }
 
-    final start = _findFocusStartIndex(lines, focusThreadId);
-    final tailStartLine = (totalLines - lines.length + 1).clamp(
-      1,
-      totalLines == 0 ? 1 : totalLines,
-    );
+    var start = _findFocusStartIndex(lines, focusThreadId);
+    final focus = (focusThreadId ?? '').trim();
+    if (focus.isNotEmpty && !_containsThreadId(lines, focus)) {
+      // Avoid replaying unrelated sessions when focusing a historical thread
+      // that isn't present in the current tail window.
+      start = lines.length;
+    }
+    final tailStartLine = (totalLines - lines.length + 1)
+        .clamp(1, totalLines == 0 ? 1 : totalLines)
+        .toInt();
     _historyRemoteStartLine = tailStartLine + start;
-    final foundThreadStart = focusThreadId == null
-        ? false
-        : _containsThreadStart(lines, focusThreadId);
-    hasMoreHistory.value = focusThreadId != null && foundThreadStart
-        ? false
-        : (tailStartLine + start) > 1;
+    hasMoreHistory.value = (tailStartLine + start) > 1;
     _pendingActionsMessage = null;
     _seenAgentMessageItemIds.clear();
     final backfill = <Message>[
@@ -3683,7 +3695,8 @@ class SessionController extends SessionControllerBase {
 
     _historyLogRelPath = logRelPath;
     _historyFocusThreadId = focusThreadId;
-    final tailStartIndex = (totalLines - tail.length).clamp(0, totalLines);
+    final tailStartIndex =
+        (totalLines - tail.length).clamp(0, totalLines).toInt();
     for (final line in tail) {
       if (line.trim().isNotEmpty) _rememberRecentLogLine(line);
     }
@@ -3695,14 +3708,15 @@ class SessionController extends SessionControllerBase {
       break;
     }
 
-    final start = _findFocusStartIndex(tail, focusThreadId);
+    var start = _findFocusStartIndex(tail, focusThreadId);
+    final focus = (focusThreadId ?? '').trim();
+    if (focus.isNotEmpty && !_containsThreadId(tail, focus)) {
+      // Avoid replaying unrelated sessions when focusing a historical thread
+      // that isn't present in the current tail window.
+      start = tail.length;
+    }
     _historyLocalStartIndex = tailStartIndex + start;
-    final foundThreadStart = focusThreadId == null
-        ? false
-        : _containsThreadStart(tail, focusThreadId);
-    hasMoreHistory.value = focusThreadId != null && foundThreadStart
-        ? false
-        : (tailStartIndex + start) > 0;
+    hasMoreHistory.value = (tailStartIndex + start) > 0;
     final wasEmpty = chatController.messages.isEmpty;
     _pendingActionsMessage = null;
     _seenAgentMessageItemIds.clear();
@@ -3740,42 +3754,53 @@ class SessionController extends SessionControllerBase {
 
   static int _findFocusStartIndex(List<String> lines, String? focusThreadId) {
     if (focusThreadId == null || focusThreadId.trim().isEmpty) return 0;
-    for (var i = lines.length - 1; i >= 0; i--) {
-      final line = lines[i];
-      if (!line.contains('thread.started')) continue;
-      if (!line.contains(focusThreadId)) continue;
-      try {
-        final decoded = jsonDecode(line);
-        if (decoded is Map) {
-          final type = decoded['type']?.toString();
-          final id = decoded['thread_id']?.toString();
-          if (type == 'thread.started' && id == focusThreadId) {
-            // Include the immediately preceding user prompt line if present.
-            if (i > 0) {
-              final prev = lines[i - 1];
-              if (prev.contains('"type":"$_clientUserMessageType"')) {
-                return i - 1;
-              }
-            }
-            return i;
-          }
-        }
-      } catch (_) {}
-    }
-    return 0;
-  }
+    final threadId = focusThreadId.trim();
 
-  static bool _containsThreadStart(List<String> lines, String threadId) {
-    if (threadId.trim().isEmpty) return false;
-    for (final line in lines) {
-      if (!line.contains('thread.started')) continue;
+    int? firstAny;
+    int? firstThreadStarted;
+    for (var i = 0; i < lines.length; i++) {
+      final line = lines[i];
       if (!line.contains(threadId)) continue;
       try {
         final decoded = jsonDecode(line);
+        if (decoded is! Map) continue;
+        final id = decoded['thread_id']?.toString();
+        if (id != threadId) continue;
+        firstAny ??= i;
+        final type = decoded['type']?.toString();
+        if (type == 'thread.started') {
+          firstThreadStarted ??= i;
+          break;
+        }
+      } catch (_) {}
+    }
+
+    final start = firstThreadStarted ?? firstAny;
+    if (start == null) return 0;
+
+    // Include the immediately preceding user prompt line if present, allowing
+    // for blank lines or interstitial events in between.
+    var checked = 0;
+    for (var j = start - 1; j >= 0 && checked < 25; j--) {
+      final prev = lines[j];
+      if (prev.trim().isEmpty) continue;
+      checked++;
+      if (prev.contains('"type":"$_clientUserMessageType"')) return j;
+      if (prev.contains('thread.started')) break;
+    }
+    return start;
+  }
+
+  static bool _containsThreadId(List<String> lines, String threadId) {
+    if (threadId.trim().isEmpty) return false;
+    final idNeedle = threadId.trim();
+    for (final line in lines) {
+      if (!line.contains(idNeedle)) continue;
+      try {
+        final decoded = jsonDecode(line);
         if (decoded is Map) {
-          final type = decoded['type']?.toString();
           final id = decoded['thread_id']?.toString();
-          if (type == 'thread.started' && id == threadId) return true;
+          if (id == idNeedle) return true;
         }
       } catch (_) {}
     }

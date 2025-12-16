@@ -19,6 +19,7 @@ import '../../services/project_tabs_store.dart';
 import '../../services/notification_service.dart';
 import '../../services/remote_jobs_store.dart';
 import '../../services/local_ssh_keys_service.dart';
+import '../../services/session_scrollback_service.dart';
 
 class InitialBinding extends Bindings {
   @override
@@ -39,6 +40,12 @@ class InitialBinding extends Bindings {
     Get.put<RemoteJobsStore>(RemoteJobsStore(), permanent: true);
     Get.put<ActiveSessionService>(ActiveSessionService(), permanent: true);
     Get.put<LocalSshKeysService>(LocalSshKeysService(), permanent: true);
+    if (!Get.isRegistered<SessionScrollbackService>()) {
+      Get.put<SessionScrollbackService>(
+        SessionScrollbackService(),
+        permanent: true,
+      );
+    }
     final lifecycle = Get.put<AppLifecycleService>(
       AppLifecycleService(),
       permanent: true,
