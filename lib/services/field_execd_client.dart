@@ -178,7 +178,7 @@ class FieldExecdClient {
         c.completeError(StateError('field_execd disconnected'));
       }
     }
-    final streams = Map<int, _DaemonStream>.from(_streams);
+    final streams = Map<int, DaemonStream>.from(_streams);
     _streams.clear();
     for (final s in streams.values) {
       s._closeWithError(StateError('field_execd disconnected'));
