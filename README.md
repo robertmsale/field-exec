@@ -168,6 +168,7 @@ Currently the app supports **one global key**.
 
 ## Troubleshooting
 
+- **macOS: `flutter run -d macos` fails during codesign with `errSecInternalComponent`**\n\n  This is almost always a local Keychain/codesign permissions issue (Xcode GUI builds can still succeed).\n  Run:\n\n  `scripts/fix-macos-cli-codesign.sh`\n+
 - If you don’t see `tmux` sessions on the remote host, install `tmux` or the app will fall back to `nohup`+PID.
 - To inspect remote processes: `ps -ax | grep codex`
 - The active remote session log is in `.field_exec/sessions/<tabId>.log`
