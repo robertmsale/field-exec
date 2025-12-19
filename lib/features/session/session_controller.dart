@@ -16,6 +16,7 @@ import '../../codex/codex_output_schema.dart';
 import '../../services/field_exec_session_store.dart';
 import '../../services/conversation_store.dart';
 import '../../services/local_shell_service.dart';
+import '../../services/local_spawn_lock.dart';
 import '../../services/active_session_service.dart';
 import '../../services/app_lifecycle_service.dart';
 import '../../services/notification_service.dart';
@@ -129,8 +130,8 @@ class SessionController extends SessionControllerBase {
   RemoteJobsStore get _remoteJobs => Get.find<RemoteJobsStore>();
   SessionScrollbackService? get _scrollbackOrNull =>
       Get.isRegistered<SessionScrollbackService>()
-          ? Get.find<SessionScrollbackService>()
-          : null;
+      ? Get.find<SessionScrollbackService>()
+      : null;
 
   static const _me = 'user';
   static const _codex = 'codex';
@@ -142,8 +143,8 @@ class SessionController extends SessionControllerBase {
   static const _maxImageBytes = 10 * 1024 * 1024;
 
   int get _scrollbackLines => SessionScrollbackService.clampLines(
-        _scrollbackOrNull?.lines ?? SessionScrollbackService.defaultLines,
-      );
+    _scrollbackOrNull?.lines ?? SessionScrollbackService.defaultLines,
+  );
 
   @override
   void onInit() {
@@ -211,23 +212,20 @@ class SessionController extends SessionControllerBase {
     _remoteSshHealthFailures = 0;
     _remoteSshHealthInFlight = false;
 
-    _remoteSshHealthTimer = Timer.periodic(
-      const Duration(seconds: 25),
-      (_) {
-        if (isClosed) {
-          _remoteSshHealthTimer?.cancel();
-          _remoteSshHealthTimer = null;
-          return;
-        }
-        if (!_lifecycle.isForeground) return;
-        if (!_isActiveView()) return;
-        if (_tailProc == null) return;
-        if (_remoteSshHealthInFlight) return;
+    _remoteSshHealthTimer = Timer.periodic(const Duration(seconds: 25), (_) {
+      if (isClosed) {
+        _remoteSshHealthTimer?.cancel();
+        _remoteSshHealthTimer = null;
+        return;
+      }
+      if (!_lifecycle.isForeground) return;
+      if (!_isActiveView()) return;
+      if (_tailProc == null) return;
+      if (_remoteSshHealthInFlight) return;
 
-        _remoteSshHealthInFlight = true;
-        unawaited(_runRemoteSshHealthCheck());
-      },
-    );
+      _remoteSshHealthInFlight = true;
+      unawaited(_runRemoteSshHealthCheck());
+    });
   }
 
   Future<void> _runRemoteSshHealthCheck() async {
@@ -235,10 +233,9 @@ class SessionController extends SessionControllerBase {
       if (target.local) return;
       final profile = target.profile;
       if (profile == null) return;
-      final pem =
-          await _storage.read(
-            key: SecureStorageService.sshPrivateKeyPemKey,
-          );
+      final pem = await _storage.read(
+        key: SecureStorageService.sshPrivateKeyPemKey,
+      );
       if (pem == null || pem.trim().isEmpty) return;
 
       final res = await _ssh.runCommandWithResult(
@@ -273,10 +270,7 @@ class SessionController extends SessionControllerBase {
 
     // Force the tail to restart using a fresh pooled connection.
     if (_tailProc != null) {
-      await _insertEvent(
-        type: 'ssh_reset',
-        text: 'SSH stalled; reconnecting…',
-      );
+      await _insertEvent(type: 'ssh_reset', text: 'SSH stalled; reconnecting…');
       _cancelTailOnly();
       _scheduleTailAutoRestart(local: false);
     }
@@ -334,7 +328,10 @@ class SessionController extends SessionControllerBase {
     );
 
     try {
-      await _rehydrateFromAnyLogForThread(threadId: id, maxLines: _scrollbackLines);
+      await _rehydrateFromAnyLogForThread(
+        threadId: id,
+        maxLines: _scrollbackLines,
+      );
     } catch (_) {}
   }
 
@@ -523,8 +520,10 @@ class SessionController extends SessionControllerBase {
 
         // If we haven't initialized pagination yet, assume the current visible
         // region corresponds to the last configured scrollback window.
-        _historyLocalStartIndex ??=
-            (totalLines - _scrollbackLines).clamp(0, totalLines);
+        _historyLocalStartIndex ??= (totalLines - _scrollbackLines).clamp(
+          0,
+          totalLines,
+        );
 
         final focus = (focusThreadId ?? '').trim();
         final isFocus = focus.isNotEmpty;
@@ -571,9 +570,12 @@ class SessionController extends SessionControllerBase {
             continue;
           }
 
-          final focusStart = isFocus ? _findFocusStartIndex(chunkLines, focus) : 0;
-          final relevantList =
-              isFocus ? chunkLines.skip(focusStart).toList() : chunkLines;
+          final focusStart = isFocus
+              ? _findFocusStartIndex(chunkLines, focus)
+              : 0;
+          final relevantList = isFocus
+              ? chunkLines.skip(focusStart).toList()
+              : chunkLines;
 
           for (final l in relevantList) {
             if (l.trim().isNotEmpty) _rememberRecentLogLine(l);
@@ -589,7 +591,9 @@ class SessionController extends SessionControllerBase {
             await _applyRecordedQuickReplySelectionsToChat();
           }
 
-          _historyLocalStartIndex = isFocus ? (newStart + focusStart) : newStart;
+          _historyLocalStartIndex = isFocus
+              ? (newStart + focusStart)
+              : newStart;
           hasMoreHistory.value = (_historyLocalStartIndex ?? 0) > 0;
           return;
         }
@@ -682,9 +686,12 @@ class SessionController extends SessionControllerBase {
           continue;
         }
 
-        final focusStart = isFocus ? _findFocusStartIndex(chunkLines, focus) : 0;
-        final relevantList =
-            isFocus ? chunkLines.skip(focusStart).toList() : chunkLines;
+        final focusStart = isFocus
+            ? _findFocusStartIndex(chunkLines, focus)
+            : 0;
+        final relevantList = isFocus
+            ? chunkLines.skip(focusStart).toList()
+            : chunkLines;
 
         for (final l in relevantList) {
           if (l.trim().isNotEmpty) _rememberRecentLogLine(l);
@@ -700,8 +707,9 @@ class SessionController extends SessionControllerBase {
           await _applyRecordedQuickReplySelectionsToChat();
         }
 
-        _historyRemoteStartLine =
-            isFocus ? (newStartLine + focusStart) : newStartLine;
+        _historyRemoteStartLine = isFocus
+            ? (newStartLine + focusStart)
+            : newStartLine;
         hasMoreHistory.value = (_historyRemoteStartLine ?? 1) > 1;
         return;
       }
@@ -723,7 +731,9 @@ class SessionController extends SessionControllerBase {
       final script =
           'wc -l ${_shQuote(absPath)} 2>/dev/null | sed \'s/^[[:space:]]*\\\\([0-9][0-9]*\\\\).*/\\\\1/\'';
       final res = await Process.run('/bin/sh', ['-c', script]);
-      final parsed = _parseWcLineCount((res.stdout as Object?)?.toString() ?? '');
+      final parsed = _parseWcLineCount(
+        (res.stdout as Object?)?.toString() ?? '',
+      );
       final size = await file.length();
       if (parsed > 0 || size == 0) return parsed;
     } catch (_) {
@@ -732,10 +742,11 @@ class SessionController extends SessionControllerBase {
 
     var count = 0;
     try {
-      await for (final _ in file
-          .openRead()
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())) {
+      await for (final _
+          in file
+              .openRead()
+              .transform(utf8.decoder)
+              .transform(const LineSplitter())) {
         count++;
       }
     } catch (_) {
@@ -754,8 +765,9 @@ class SessionController extends SessionControllerBase {
     try {
       final cmd = 'tail -n $maxLines ${_shQuote(absPath)} 2>/dev/null || true';
       final res = await Process.run('/bin/sh', ['-c', cmd]);
-      final out = const LineSplitter()
-          .convert((res.stdout as Object?)?.toString() ?? '');
+      final out = const LineSplitter().convert(
+        (res.stdout as Object?)?.toString() ?? '',
+      );
       final size = await file.length();
       if (out.isNotEmpty || size == 0) return out;
     } catch (_) {
@@ -764,10 +776,11 @@ class SessionController extends SessionControllerBase {
 
     final buf = ListQueue<String>();
     try {
-      await for (final line in file
-          .openRead()
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())) {
+      await for (final line
+          in file
+              .openRead()
+              .transform(utf8.decoder)
+              .transform(const LineSplitter())) {
         buf.add(line);
         while (buf.length > maxLines) {
           buf.removeFirst();
@@ -793,8 +806,9 @@ class SessionController extends SessionControllerBase {
       final cmd =
           'sed -n \'${startLineInclusive1Based},${endLineInclusive1Based}p\' ${_shQuote(absPath)} 2>/dev/null || true';
       final res = await Process.run('/bin/sh', ['-c', cmd]);
-      final out = const LineSplitter()
-          .convert((res.stdout as Object?)?.toString() ?? '');
+      final out = const LineSplitter().convert(
+        (res.stdout as Object?)?.toString() ?? '',
+      );
       // If the range exists but contains only blank lines, LineSplitter will
       // still return entries, so empty output is a decent signal of failure.
       if (out.isNotEmpty) return out;
@@ -805,10 +819,11 @@ class SessionController extends SessionControllerBase {
     final out = <String>[];
     var lineNo = 0;
     try {
-      await for (final line in file
-          .openRead()
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())) {
+      await for (final line
+          in file
+              .openRead()
+              .transform(utf8.decoder)
+              .transform(const LineSplitter())) {
         lineNo++;
         if (lineNo < startLineInclusive1Based) continue;
         if (lineNo > endLineInclusive1Based) break;
@@ -1097,13 +1112,15 @@ class SessionController extends SessionControllerBase {
     _pendingImageLoads.add(key);
 
     final completer = Completer<void>();
-    _imageLoadQueue = _imageLoadQueue.then((_) async {
-      if (isClosed) return;
-      await _processImageLoad(messageId: messageId, index: index);
-    }).whenComplete(() {
-      _pendingImageLoads.remove(key);
-      if (!completer.isCompleted) completer.complete();
-    });
+    _imageLoadQueue = _imageLoadQueue
+        .then((_) async {
+          if (isClosed) return;
+          await _processImageLoad(messageId: messageId, index: index);
+        })
+        .whenComplete(() {
+          _pendingImageLoads.remove(key);
+          if (!completer.isCompleted) completer.complete();
+        });
 
     await completer.future;
   }
@@ -1195,7 +1212,12 @@ class SessionController extends SessionControllerBase {
         bytes: bytes,
       );
     } catch (e) {
-      await _updateImageGridMessage(message, index, status: 'error', error: '$e');
+      await _updateImageGridMessage(
+        message,
+        index,
+        status: 'error',
+        error: '$e',
+      );
     }
   }
 
@@ -1622,7 +1644,10 @@ class SessionController extends SessionControllerBase {
         }
       }
 
-      await _rehydrateFromLocalLog(maxLines: _scrollbackLines, logRelPath: _logRelPath);
+      await _rehydrateFromLocalLog(
+        maxLines: _scrollbackLines,
+        logRelPath: _logRelPath,
+      );
       // Fallback: if the tab log is missing/mismatched but we have a stored
       // thread id, try to locate the matching log in this project's sessions.
       if (chatController.messages.isEmpty) {
@@ -2401,26 +2426,43 @@ class SessionController extends SessionControllerBase {
         'fi',
       ].join('\n');
 
-      final launchProc = _localShell.startCommand(
-        executable: '/bin/sh',
-        arguments: ['-c', startBody],
-        workingDirectory: projectPath,
-      );
+      // Cross-window spawn coordination: in multi-window desktop, multiple
+      // Flutter engines share a single process and spawning multiple local jobs
+      // concurrently can lead to hangs. Serialize the short "launch" step.
+      LocalSpawnLock? spawnLock;
+      if (LocalSpawnLock.supported) {
+        spawnLock = await LocalSpawnLock.acquire(
+          key: 'local_codex_spawn_v1',
+          timeout: const Duration(seconds: 20),
+        );
+      }
 
       final stdout = <String>[];
       final stderr = <String>[];
-      final stdoutSub = launchProc.stdoutLines.listen(stdout.add);
-      final stderrSub = launchProc.stderrLines.listen(stderr.add);
 
       int? exit;
       Object? exitError;
+
       try {
-        exit = await launchProc.exitCode.timeout(const Duration(seconds: 10));
-      } on TimeoutException catch (e) {
-        exitError = e;
+        final launchProc = _localShell.startCommand(
+          executable: '/bin/sh',
+          arguments: ['-c', startBody],
+          workingDirectory: projectPath,
+        );
+
+        final stdoutSub = launchProc.stdoutLines.listen(stdout.add);
+        final stderrSub = launchProc.stderrLines.listen(stderr.add);
+
+        try {
+          exit = await launchProc.exitCode.timeout(const Duration(seconds: 10));
+        } on TimeoutException catch (e) {
+          exitError = e;
+        } finally {
+          await stdoutSub.cancel();
+          await stderrSub.cancel();
+        }
       } finally {
-        await stdoutSub.cancel();
-        await stderrSub.cancel();
+        await spawnLock?.release();
       }
 
       String? jobLine;
@@ -3961,7 +4003,9 @@ class SessionController extends SessionControllerBase {
       hasMoreHistory.value = false;
       // If we expected history here but the log is missing, surface a hint.
       try {
-        final sessionsDir = Directory(_joinPosix(projectPath, _sessionsDirRelPath));
+        final sessionsDir = Directory(
+          _joinPosix(projectPath, _sessionsDirRelPath),
+        );
         if (await sessionsDir.exists()) {
           final logs = await sessionsDir
               .list()
@@ -3989,7 +4033,10 @@ class SessionController extends SessionControllerBase {
       return;
     }
 
-    final tail = await _readLocalTailLines(absPath: logPath, maxLines: maxLines);
+    final tail = await _readLocalTailLines(
+      absPath: logPath,
+      maxLines: maxLines,
+    );
     if (tail.isEmpty) {
       _historyLogRelPath = logRelPath;
       _historyFocusThreadId = focusThreadId;
@@ -4009,8 +4056,9 @@ class SessionController extends SessionControllerBase {
 
     _historyLogRelPath = logRelPath;
     _historyFocusThreadId = focusThreadId;
-    final tailStartIndex =
-        (totalLines - tail.length).clamp(0, totalLines).toInt();
+    final tailStartIndex = (totalLines - tail.length)
+        .clamp(0, totalLines)
+        .toInt();
     for (final line in tail) {
       if (line.trim().isNotEmpty) _rememberRecentLogLine(line);
     }
@@ -4212,7 +4260,10 @@ class SessionController extends SessionControllerBase {
       _repairedExplodedChat = true;
       try {
         if (target.local) {
-          await _rehydrateFromLocalLog(maxLines: _scrollbackLines, logRelPath: _logRelPath);
+          await _rehydrateFromLocalLog(
+            maxLines: _scrollbackLines,
+            logRelPath: _logRelPath,
+          );
         } else {
           await _rehydrateFromRemoteLog(maxLines: _scrollbackLines);
         }
@@ -4275,18 +4326,18 @@ class SessionController extends SessionControllerBase {
       return;
     }
 
-	    if (type == 'turn.started' ||
-	        type == 'turn.completed' ||
-	        type == 'turn.failed') {
-	      if (type == 'turn.started') {
-	        // Codex item ids (e.g. `item_0`, `item_10`) are not guaranteed to be
-	        // globally unique across turns, so scope deduping to a single turn.
-	        _seenAgentMessageItemIds.clear();
-	      }
-	      if (type == 'turn.started' && !isRunning.value) {
-	        isRunning.value = true;
-	        thinkingPreview.value = null;
-	        if (!target.local) {
+    if (type == 'turn.started' ||
+        type == 'turn.completed' ||
+        type == 'turn.failed') {
+      if (type == 'turn.started') {
+        // Codex item ids (e.g. `item_0`, `item_10`) are not guaranteed to be
+        // globally unique across turns, so scope deduping to a single turn.
+        _seenAgentMessageItemIds.clear();
+      }
+      if (type == 'turn.started' && !isRunning.value) {
+        isRunning.value = true;
+        thinkingPreview.value = null;
+        if (!target.local) {
           _cancelCurrent ??= () {
             _stopRemoteJob().whenComplete(() {
               _cancelTailOnly();
@@ -4633,17 +4684,17 @@ class SessionController extends SessionControllerBase {
       return const [];
     }
 
-	    if (type == 'turn.started' ||
-	        type == 'turn.completed' ||
-	        type == 'turn.failed') {
-	      if (type == 'turn.started') {
-	        // Same rationale as the live tail path: item ids can repeat per-turn.
-	        _seenAgentMessageItemIds.clear();
-	      }
-	      if (type == 'turn.failed') {
-	        final err = event['error']?.toString();
-	        final trimmed = err?.trim();
-	        return [
+    if (type == 'turn.started' ||
+        type == 'turn.completed' ||
+        type == 'turn.failed') {
+      if (type == 'turn.started') {
+        // Same rationale as the live tail path: item ids can repeat per-turn.
+        _seenAgentMessageItemIds.clear();
+      }
+      if (type == 'turn.failed') {
+        final err = event['error']?.toString();
+        final trimmed = err?.trim();
+        return [
           _eventMessage(
             type: 'turn.failed',
             text: trimmed == null || trimmed.isEmpty ? 'Turn failed.' : trimmed,
@@ -4694,11 +4745,14 @@ class SessionController extends SessionControllerBase {
 
     try {
       final groupId = pending.metadata?['group_id']?.toString().trim() ?? '';
-      final current =
-          groupId.isNotEmpty ? (_actionsByGroupId[groupId] ?? pending) : pending;
+      final current = groupId.isNotEmpty
+          ? (_actionsByGroupId[groupId] ?? pending)
+          : pending;
       final metadata = Map<String, Object?>.from(current.metadata ?? const {});
       metadata['consumed'] = true;
-      metadata['consumed_at_ms_utc'] = DateTime.now().toUtc().millisecondsSinceEpoch;
+      metadata['consumed_at_ms_utc'] = DateTime.now()
+          .toUtc()
+          .millisecondsSinceEpoch;
       // Keep the original `actions` payload so the buttons remain visible for
       // scrollback and context; the UI can disable them when `consumed` is set.
 
