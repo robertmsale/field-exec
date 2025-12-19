@@ -843,6 +843,8 @@ class MockSessionController extends SessionControllerBase {
   @override
   final inputController = TextEditingController();
   @override
+  final inputFocusNode = FocusNode(debugLabel: 'mock_input');
+  @override
   final isRunning = false.obs;
   @override
   final isLoadingMoreHistory = false.obs;
@@ -1128,8 +1130,7 @@ class MockSessionController extends SessionControllerBase {
     String? actionId,
     String? actionGroupId,
     String? actionLabel,
-  }) =>
-      sendText(value);
+  }) => sendText(value);
 
   @override
   Future<void> loadImageAttachment(CustomMessage message, {int? index}) async {
@@ -1269,8 +1270,15 @@ class MockSessionController extends SessionControllerBase {
 
   @override
   void onClose() {
-    inputController.dispose();
-    chatController.dispose();
+    try {
+      inputController.dispose();
+    } catch (_) {}
+    try {
+      inputFocusNode.dispose();
+    } catch (_) {}
+    try {
+      chatController.dispose();
+    } catch (_) {}
     super.onClose();
   }
 }

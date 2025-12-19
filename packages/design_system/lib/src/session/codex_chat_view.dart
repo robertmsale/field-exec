@@ -21,6 +21,7 @@ class CodexChatView extends StatefulWidget {
 class _CodexChatViewState extends State<CodexChatView> {
   final _scrollController = ScrollController();
   bool _scrollToBottomScheduled = false;
+  final FocusNode _windowFocusNode = FocusNode(debugLabel: 'chat_window_focus');
 
   SessionControllerBase get controller => widget.controller;
 
@@ -36,13 +37,17 @@ class _CodexChatViewState extends State<CodexChatView> {
 
     if (kind == 'codex_actions' || kind == 'codex_actions_consumed') {
       final actions = (meta['actions'] as List?) ?? const [];
-      return actions.whereType<Map>().map((a) {
-        final label = a['label']?.toString() ?? '';
-        final value = a['value']?.toString() ?? '';
-        if (label.trim().isEmpty) return value;
-        if (value.trim().isEmpty) return label;
-        return '$label: $value';
-      }).where((s) => s.trim().isNotEmpty).join('\n');
+      return actions
+          .whereType<Map>()
+          .map((a) {
+            final label = a['label']?.toString() ?? '';
+            final value = a['value']?.toString() ?? '';
+            if (label.trim().isEmpty) return value;
+            if (value.trim().isEmpty) return label;
+            return '$label: $value';
+          })
+          .where((s) => s.trim().isNotEmpty)
+          .join('\n');
     }
 
     if (kind == 'codex_event') {
@@ -67,7 +72,8 @@ class _CodexChatViewState extends State<CodexChatView> {
     return message.map(
       text: (m) => m.text,
       textStream: (_) => '',
-      image: (m) => (m.text ?? '').trim().isNotEmpty ? (m.text ?? '') : m.source,
+      image: (m) =>
+          (m.text ?? '').trim().isNotEmpty ? (m.text ?? '') : m.source,
       file: (m) => m.name.trim().isNotEmpty ? m.name : m.source,
       video: (m) {
         final t = (m.text ?? '').trim();
@@ -76,7 +82,8 @@ class _CodexChatViewState extends State<CodexChatView> {
         if (n.isNotEmpty) return n;
         return m.source;
       },
-      audio: (m) => (m.text ?? '').trim().isNotEmpty ? (m.text ?? '') : m.source,
+      audio: (m) =>
+          (m.text ?? '').trim().isNotEmpty ? (m.text ?? '') : m.source,
       system: (m) => m.text,
       custom: (m) => _copyTextFromCustomMetadata(m.metadata),
       unsupported: (_) => '',
@@ -110,9 +117,7 @@ class _CodexChatViewState extends State<CodexChatView> {
         Rect.fromLTWH(globalPosition.dx, globalPosition.dy, 0, 0),
         Offset.zero & overlay.size,
       ),
-      items: const [
-        PopupMenuItem<String>(value: 'copy', child: Text('Copy')),
-      ],
+      items: const [PopupMenuItem<String>(value: 'copy', child: Text('Copy'))],
     );
 
     if (!context.mounted) return;
@@ -124,6 +129,7 @@ class _CodexChatViewState extends State<CodexChatView> {
   @override
   void dispose() {
     _scrollController.dispose();
+    _windowFocusNode.dispose();
     super.dispose();
   }
 
@@ -177,9 +183,10 @@ class _CodexChatViewState extends State<CodexChatView> {
         currentUserId: 'user',
         resolveUser: controller.resolveUser,
         onMessageSend: controller.sendText,
-        onMessageLongPress: (context, message, {required index, required details}) {
-          unawaited(_copyMessage(context, message));
-        },
+        onMessageLongPress:
+            (context, message, {required index, required details}) {
+              unawaited(_copyMessage(context, message));
+            },
         onMessageSecondaryTap: (context, message, {required index, details}) {
           final pos =
               details?.globalPosition ??
@@ -193,11 +200,22 @@ class _CodexChatViewState extends State<CodexChatView> {
         backgroundColor: theme.colors.surface,
         builders: Builders(
           chatAnimatedListBuilder: (context, itemBuilder) {
-            return ChatAnimatedList(
-              itemBuilder: itemBuilder,
-              scrollController: _scrollController,
-              bottomPadding: 120,
-              onEndReached: canLoadMore ? controller.loadMoreHistory : null,
+            return Focus(
+              focusNode: _windowFocusNode,
+              child: Listener(
+                behavior: HitTestBehavior.translucent,
+                onPointerDown: (_) {
+                  if (!_windowFocusNode.hasFocus) {
+                    FocusScope.of(context).requestFocus(_windowFocusNode);
+                  }
+                },
+                child: ChatAnimatedList(
+                  itemBuilder: itemBuilder,
+                  scrollController: _scrollController,
+                  bottomPadding: 120,
+                  onEndReached: canLoadMore ? controller.loadMoreHistory : null,
+                ),
+              ),
             );
           },
           composerBuilder: (context) => CodexComposer(controller: controller),
@@ -238,7 +256,8 @@ class _CodexChatViewState extends State<CodexChatView> {
                   );
                 }
 
-                if (kind == 'codex_actions' || kind == 'codex_actions_consumed') {
+                if (kind == 'codex_actions' ||
+                    kind == 'codex_actions_consumed') {
                   final actions = (meta['actions'] as List?) ?? const [];
                   if (actions.isEmpty) return const SizedBox.shrink();
                   final groupId = meta['group_id']?.toString() ?? '';
@@ -257,37 +276,32 @@ class _CodexChatViewState extends State<CodexChatView> {
                       final value = a['value']?.toString() ?? '';
                       final picked =
                           actionId.isNotEmpty && selected.contains(actionId);
-                      return Obx(
-                        () {
-                          final onPressed =
-                              controller.isRunning.value ||
-                                      picked ||
-                                      value.trim().isEmpty
-                                  ? null
-                                  : () => controller.sendQuickReply(
-                                        value,
-                                        actionId:
-                                            actionId.isEmpty ? null : actionId,
-                                        actionGroupId:
-                                            groupId.isEmpty ? null : groupId,
-                                        actionLabel:
-                                            label.isEmpty ? null : label,
-                                      );
+                      return Obx(() {
+                        final onPressed =
+                            controller.isRunning.value ||
+                                picked ||
+                                value.trim().isEmpty
+                            ? null
+                            : () => controller.sendQuickReply(
+                                value,
+                                actionId: actionId.isEmpty ? null : actionId,
+                                actionGroupId: groupId.isEmpty ? null : groupId,
+                                actionLabel: label.isEmpty ? null : label,
+                              );
 
-                          if (picked) {
-                            return OutlinedButton.icon(
-                              onPressed: onPressed,
-                              icon: const Icon(Icons.check, size: 18),
-                              label: Text(label),
-                            );
-                          }
-
-                          return OutlinedButton(
+                        if (picked) {
+                          return OutlinedButton.icon(
                             onPressed: onPressed,
-                            child: Text(label),
+                            icon: const Icon(Icons.check, size: 18),
+                            label: Text(label),
                           );
-                        },
-                      );
+                        }
+
+                        return OutlinedButton(
+                          onPressed: onPressed,
+                          child: Text(label),
+                        );
+                      });
                     }).toList(),
                   );
                 }

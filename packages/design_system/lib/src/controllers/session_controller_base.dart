@@ -5,6 +5,7 @@ import 'package:get/get.dart';
 abstract class SessionControllerBase extends GetxController {
   InMemoryChatController get chatController;
   TextEditingController get inputController;
+  FocusNode get inputFocusNode;
 
   RxBool get isRunning;
   RxBool get isLoadingMoreHistory;

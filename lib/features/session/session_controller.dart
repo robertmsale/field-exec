@@ -33,6 +33,8 @@ class SessionController extends SessionControllerBase {
   final InMemoryChatController chatController;
   @override
   final TextEditingController inputController = TextEditingController();
+  @override
+  final FocusNode inputFocusNode = FocusNode(debugLabel: 'codex_input');
 
   @override
   final isRunning = false.obs;
@@ -197,6 +199,7 @@ class SessionController extends SessionControllerBase {
     _cancelLocalTailOnly();
     chatController.dispose();
     inputController.dispose();
+    inputFocusNode.dispose();
     super.onClose();
   }
 

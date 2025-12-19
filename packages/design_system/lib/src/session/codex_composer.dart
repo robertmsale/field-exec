@@ -107,11 +107,17 @@ class _CodexComposerState extends State<CodexComposer> {
                       child: Obx(
                         () => TextField(
                           controller: _text,
+                          focusNode: widget.controller.inputFocusNode,
                           enabled: !widget.controller.isRunning.value,
                           decoration: const InputDecoration(
                             hintText: 'Message Codex…',
                             border: InputBorder.none,
                           ),
+                          onTap: () {
+                            FocusScope.of(
+                              context,
+                            ).requestFocus(widget.controller.inputFocusNode);
+                          },
                           keyboardType: TextInputType.multiline,
                           textInputAction: TextInputAction.newline,
                           minLines: 1,
