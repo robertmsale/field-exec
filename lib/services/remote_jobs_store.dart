@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'desktop_file_store.dart';
+
 class RemoteJobRecord {
   final String targetKey;
   final String host;
@@ -28,16 +30,16 @@ class RemoteJobRecord {
   String get key => '$targetKey|$projectPath|$tabId';
 
   Map<String, Object?> toJson() => {
-        'targetKey': targetKey,
-        'host': host,
-        'port': port,
-        'username': username,
-        'projectPath': projectPath,
-        'tabId': tabId,
-        'remoteJobId': remoteJobId,
-        'threadId': threadId,
-        'startedAtMsUtc': startedAtMsUtc,
-      };
+    'targetKey': targetKey,
+    'host': host,
+    'port': port,
+    'username': username,
+    'projectPath': projectPath,
+    'tabId': tabId,
+    'remoteJobId': remoteJobId,
+    'threadId': threadId,
+    'startedAtMsUtc': startedAtMsUtc,
+  };
 
   static RemoteJobRecord? fromJson(Map<String, Object?> json) {
     final targetKey = (json['targetKey'] as String?) ?? '';
@@ -50,8 +52,9 @@ class RemoteJobRecord {
     final startedAt = json['startedAtMsUtc'];
 
     final portInt = port is int ? port : int.tryParse(port?.toString() ?? '');
-    final startedAtInt =
-        startedAt is int ? startedAt : int.tryParse(startedAt?.toString() ?? '');
+    final startedAtInt = startedAt is int
+        ? startedAt
+        : int.tryParse(startedAt?.toString() ?? '');
 
     if (targetKey.isEmpty ||
         host.isEmpty ||
@@ -84,6 +87,28 @@ class RemoteJobsStore {
   static const _jobsKey = 'field_exec_active_jobs_v1';
 
   Future<List<RemoteJobRecord>> loadAll() async {
+    if (DesktopFileStore.enabled) {
+      final v = await DesktopFileStore.readJson(_jobsKey);
+      final list = v is List ? v : const [];
+      final out = <RemoteJobRecord>[];
+      for (final item in list) {
+        try {
+          if (item is Map) {
+            final rec = RemoteJobRecord.fromJson(item.cast<String, Object?>());
+            if (rec != null) out.add(rec);
+          } else if (item is String) {
+            final decoded = jsonDecode(item);
+            if (decoded is Map) {
+              final rec = RemoteJobRecord.fromJson(
+                decoded.cast<String, Object?>(),
+              );
+              if (rec != null) out.add(rec);
+            }
+          }
+        } catch (_) {}
+      }
+      return out;
+    }
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getStringList(_jobsKey) ?? const <String>[];
     final out = <RemoteJobRecord>[];
@@ -91,9 +116,7 @@ class RemoteJobsStore {
       try {
         final decoded = jsonDecode(s);
         if (decoded is Map) {
-          final rec = RemoteJobRecord.fromJson(
-            decoded.cast<String, Object?>(),
-          );
+          final rec = RemoteJobRecord.fromJson(decoded.cast<String, Object?>());
           if (rec != null) out.add(rec);
         }
       } catch (_) {}
@@ -102,7 +125,6 @@ class RemoteJobsStore {
   }
 
   Future<void> upsert(RemoteJobRecord record) async {
-    final prefs = await SharedPreferences.getInstance();
     final existing = await loadAll();
 
     final next = <RemoteJobRecord>[
@@ -110,6 +132,14 @@ class RemoteJobsStore {
       ...existing.where((r) => r.key != record.key),
     ];
 
+    if (DesktopFileStore.enabled) {
+      await DesktopFileStore.writeJson(
+        _jobsKey,
+        next.map((r) => r.toJson()).toList(growable: false),
+      );
+      return;
+    }
+    final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList(
       _jobsKey,
       next.map((r) => jsonEncode(r.toJson())).toList(growable: false),
@@ -121,10 +151,18 @@ class RemoteJobsStore {
     required String projectPath,
     required String tabId,
   }) async {
-    final prefs = await SharedPreferences.getInstance();
     final existing = await loadAll();
     final key = '$targetKey|$projectPath|$tabId';
     final next = existing.where((r) => r.key != key).toList(growable: false);
+
+    if (DesktopFileStore.enabled) {
+      await DesktopFileStore.writeJson(
+        _jobsKey,
+        next.map((r) => r.toJson()).toList(growable: false),
+      );
+      return;
+    }
+    final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList(
       _jobsKey,
       next.map((r) => jsonEncode(r.toJson())).toList(growable: false),

@@ -4,6 +4,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:design_system/design_system.dart';
 
+import 'desktop_file_store.dart';
+
 class ProjectTabsStore {
   static String _keyFor(String targetKey, String projectPath) =>
       'project_tabs_v1:$targetKey:$projectPath';
@@ -12,6 +14,20 @@ class ProjectTabsStore {
     required String targetKey,
     required String projectPath,
   }) async {
+    if (DesktopFileStore.enabled) {
+      final v = await DesktopFileStore.readJson(
+        _keyFor(targetKey, projectPath),
+      );
+      if (v is List) {
+        final tabs = v
+            .whereType<Map>()
+            .map((m) => ProjectTab.fromJson(m.cast<String, Object?>()))
+            .where((t) => t.id.isNotEmpty)
+            .toList(growable: false);
+        return tabs;
+      }
+      return const [];
+    }
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_keyFor(targetKey, projectPath));
     if (raw == null || raw.isEmpty) return const [];
@@ -34,8 +50,17 @@ class ProjectTabsStore {
     required String projectPath,
     required List<ProjectTab> tabs,
   }) async {
+    if (DesktopFileStore.enabled) {
+      await DesktopFileStore.writeJson(
+        _keyFor(targetKey, projectPath),
+        tabs.map((t) => t.toJson()).toList(growable: false),
+      );
+      return;
+    }
     final prefs = await SharedPreferences.getInstance();
-    final json = jsonEncode(tabs.map((t) => t.toJson()).toList(growable: false));
+    final json = jsonEncode(
+      tabs.map((t) => t.toJson()).toList(growable: false),
+    );
     await prefs.setString(_keyFor(targetKey, projectPath), json);
   }
 }
