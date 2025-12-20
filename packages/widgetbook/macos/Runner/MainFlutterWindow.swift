@@ -21,11 +21,14 @@ private enum FieldExecPasteBridge {
   private static var didInstall = false
   private static let channelName = "field_exec/paste"
   fileprivate static let pasteSelector = NSSelectorFromString("paste:")
+  fileprivate static let pasteAsPlainTextSelector = NSSelectorFromString("pasteAsPlainText:")
+  fileprivate static let pasteAndMatchStyleSelector = NSSelectorFromString("pasteAndMatchStyle:")
 
   static func install() {
     if didInstall { return }
     didInstall = true
     swizzleSendActionOnNSApplication()
+    swizzleInsertTextOnNSTextView()
   }
 
   private static func swizzleSendActionOnNSApplication() {
@@ -35,6 +38,20 @@ private enum FieldExecPasteBridge {
     guard
       let originalMethod = class_getInstanceMethod(NSApplication.self, originalSelector),
       let swizzledMethod = class_getInstanceMethod(NSApplication.self, swizzledSelector)
+    else {
+      return
+    }
+
+    method_exchangeImplementations(originalMethod, swizzledMethod)
+  }
+
+  private static func swizzleInsertTextOnNSTextView() {
+    let originalSelector = #selector(NSTextView.insertText(_:replacementRange:))
+    let swizzledSelector = #selector(NSTextView.fieldExec_insertText(_:replacementRange:))
+
+    guard
+      let originalMethod = class_getInstanceMethod(NSTextView.self, originalSelector),
+      let swizzledMethod = class_getInstanceMethod(NSTextView.self, swizzledSelector)
     else {
       return
     }
@@ -54,15 +71,45 @@ private enum FieldExecPasteBridge {
     channel.invokeMethod("pasteText", arguments: ["text": text])
     return true
   }
+
+  fileprivate static func handleInsertText(window: NSWindow, text: String) -> Bool {
+    guard !text.isEmpty else { return false }
+    guard let controller = window.contentViewController as? FlutterViewController else { return false }
+
+    let channel = FlutterMethodChannel(
+      name: channelName,
+      binaryMessenger: controller.engine.binaryMessenger
+    )
+    channel.invokeMethod("insertText", arguments: ["text": text])
+    return true
+  }
 }
 
 extension NSApplication {
   @objc func fieldExec_sendAction(_ action: Selector, to target: Any?, from sender: Any?) -> Bool {
-    let handledByAppKit = self.fieldExec_sendAction(action, to: target, from: sender)
-    if handledByAppKit { return true }
+    if action == FieldExecPasteBridge.pasteSelector ||
+        action == FieldExecPasteBridge.pasteAsPlainTextSelector ||
+        action == FieldExecPasteBridge.pasteAndMatchStyleSelector {
+      if let window = self.keyWindow ?? self.mainWindow,
+         FieldExecPasteBridge.handlePaste(window: window) {
+        return true
+      }
+    }
 
-    guard action == FieldExecPasteBridge.pasteSelector else { return false }
-    guard let window = self.keyWindow ?? self.mainWindow else { return false }
-    return FieldExecPasteBridge.handlePaste(window: window)
+    return self.fieldExec_sendAction(action, to: target, from: sender)
+  }
+}
+
+extension NSTextView {
+  @objc func fieldExec_insertText(_ insertString: Any, replacementRange: NSRange) {
+    if NSApp.currentEvent == nil {
+      let text: String? = (insertString as? String) ?? (insertString as? NSAttributedString)?.string
+      if let text = text,
+         let window = self.window ?? NSApp.keyWindow ?? NSApp.mainWindow {
+        _ = FieldExecPasteBridge.handleInsertText(window: window, text: text)
+      }
+    }
+
+    self.fieldExec_insertText(insertString, replacementRange: replacementRange)
   }
 }

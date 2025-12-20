@@ -21,7 +21,7 @@ class FieldExecPasteService {
     if (!Platform.isMacOS) return;
 
     _channel.setMethodCallHandler((call) async {
-      if (call.method != 'pasteText') return;
+      if (call.method != 'pasteText' && call.method != 'insertText') return;
       final args = (call.arguments is Map)
           ? Map<String, dynamic>.from(call.arguments as Map)
           : const <String, dynamic>{};
