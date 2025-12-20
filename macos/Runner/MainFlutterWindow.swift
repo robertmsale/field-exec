@@ -25,20 +25,21 @@ class MainFlutterWindow: NSWindow {
 private enum FieldExecPasteBridge {
   private static var didInstall = false
   private static let channelName = "field_exec/paste"
+  fileprivate static let pasteSelector = NSSelectorFromString("paste:")
 
   static func install() {
     if didInstall { return }
     didInstall = true
-    swizzlePasteOnNSWindow()
+    swizzleSendActionOnNSApplication()
   }
 
-  private static func swizzlePasteOnNSWindow() {
-    let originalSelector = #selector(NSResponder.paste(_:))
-    let swizzledSelector = #selector(NSWindow.fieldExec_paste(_:))
+  private static func swizzleSendActionOnNSApplication() {
+    let originalSelector = #selector(NSApplication.sendAction(_:to:from:))
+    let swizzledSelector = #selector(NSApplication.fieldExec_sendAction(_:to:from:))
 
     guard
-      let originalMethod = class_getInstanceMethod(NSWindow.self, originalSelector),
-      let swizzledMethod = class_getInstanceMethod(NSWindow.self, swizzledSelector)
+      let originalMethod = class_getInstanceMethod(NSApplication.self, originalSelector),
+      let swizzledMethod = class_getInstanceMethod(NSApplication.self, swizzledSelector)
     else {
       return
     }
@@ -46,24 +47,27 @@ private enum FieldExecPasteBridge {
     method_exchangeImplementations(originalMethod, swizzledMethod)
   }
 
-  fileprivate static func handlePaste(window: NSWindow) {
+  fileprivate static func handlePaste(window: NSWindow) -> Bool {
     let pasteboard = NSPasteboard.general
-    guard let text = pasteboard.string(forType: .string), !text.isEmpty else { return }
-    guard let controller = window.contentViewController as? FlutterViewController else { return }
+    guard let text = pasteboard.string(forType: .string), !text.isEmpty else { return false }
+    guard let controller = window.contentViewController as? FlutterViewController else { return false }
 
     let channel = FlutterMethodChannel(
       name: channelName,
       binaryMessenger: controller.engine.binaryMessenger
     )
     channel.invokeMethod("pasteText", arguments: ["text": text])
+    return true
   }
 }
 
-extension NSWindow {
-  @objc func fieldExec_paste(_ sender: Any?) {
-    FieldExecPasteBridge.handlePaste(window: self)
+extension NSApplication {
+  @objc func fieldExec_sendAction(_ action: Selector, to target: Any?, from sender: Any?) -> Bool {
+    let handledByAppKit = self.fieldExec_sendAction(action, to: target, from: sender)
+    if handledByAppKit { return true }
 
-    // Call the original implementation (which is now swapped).
-    self.fieldExec_paste(sender)
+    guard action == FieldExecPasteBridge.pasteSelector else { return false }
+    guard let window = self.keyWindow ?? self.mainWindow else { return false }
+    return FieldExecPasteBridge.handlePaste(window: window)
   }
 }
