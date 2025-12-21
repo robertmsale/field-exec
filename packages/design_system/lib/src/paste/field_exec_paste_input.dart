@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -13,6 +14,11 @@ class FieldExecPasteService {
   bool _initialized = false;
   TextEditingController? _activeController;
   TextEditingController? _lastKnownController;
+
+  final List<String> _pendingParts = <String>[];
+  bool _flushScheduled = false;
+  int _suppressInsertTextUntilMs = 0;
+  bool _pendingHasInsertText = false;
 
   void ensureInitialized() {
     if (_initialized) return;
@@ -31,11 +37,15 @@ class FieldExecPasteService {
       final controller = _activeController ?? _lastKnownController;
       if (controller == null) return;
 
-      try {
-        _insertText(controller, text);
-      } catch (_) {
-        // If the controller is disposed or otherwise invalid, ignore.
-      }
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final isInsertText = call.method == 'insertText';
+      if (isInsertText && nowMs < _suppressInsertTextUntilMs) return;
+
+      _pendingParts.add(text);
+      _pendingHasInsertText = _pendingHasInsertText || isInsertText;
+      if (_flushScheduled) return;
+      _flushScheduled = true;
+      scheduleMicrotask(_flush);
     });
   }
 
@@ -53,7 +63,40 @@ class FieldExecPasteService {
   void dispose() {
     _activeController = null;
     _lastKnownController = null;
+    _pendingParts.clear();
+    _flushScheduled = false;
+    _pendingHasInsertText = false;
     _initialized = false;
+  }
+
+  void _flush() {
+    _flushScheduled = false;
+    if (_pendingParts.isEmpty) return;
+
+    final controller = _activeController ?? _lastKnownController;
+    if (controller == null) {
+      _pendingParts.clear();
+      _pendingHasInsertText = false;
+      return;
+    }
+
+    final text = _pendingParts.join();
+    _pendingParts.clear();
+    if (text.isEmpty) return;
+
+    // Prevent a feedback loop where inserting into a Flutter TextField causes
+    // a programmatic insertText callback from AppKit that we would echo back.
+    final suppressInsertText = _pendingHasInsertText;
+    _pendingHasInsertText = false;
+    if (suppressInsertText) {
+      _suppressInsertTextUntilMs = DateTime.now().millisecondsSinceEpoch + 25;
+    }
+
+    try {
+      _insertText(controller, text);
+    } catch (_) {
+      // If the controller is disposed or otherwise invalid, ignore.
+    }
   }
 
   void _insertText(TextEditingController controller, String insert) {
